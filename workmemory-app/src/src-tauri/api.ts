@@ -61,6 +61,14 @@ export async function getRecorderState(): Promise<RecorderState> {
   return invoke<RecorderState>('get_recorder_state');
 }
 
+/**
+ * 手动快速捕捉（Ghost Capture）：返回 OCR 识别出的纯文本。
+ * 对应后端 `trigger_manual_capture` IPC 命令。
+ */
+export async function triggerManualCapture(): Promise<string> {
+  return invoke<string>('trigger_manual_capture');
+}
+
 export async function setRecorderState(state: RecorderState): Promise<void> {
   await invoke<void>('set_recorder_state', { state });
 }
@@ -71,6 +79,22 @@ export async function getTodaySummary(date?: string): Promise<string> {
 
 export async function getEpisodesByDate(date: string): Promise<CleanEpisode[]> {
   return invoke<CleanEpisode[]>('get_episodes_by_date', { date });
+}
+
+export async function getEpisodeById(id: string): Promise<CleanEpisode | null> {
+  return invoke<CleanEpisode | null>('get_episode_by_id', { id });
+}
+
+/**
+ * 用户手动编辑 Episode 标题与摘要（持久化到 clean_episodes 表）。
+ * 对应后端 `update_episode_title_summary` IPC 命令。
+ */
+export async function updateEpisodeTitleSummary(
+  id: string,
+  title: string,
+  summary: string,
+): Promise<void> {
+  await invoke<void>('update_episode_title_summary', { id, title, summary });
 }
 
 export async function searchMemories(
@@ -208,9 +232,12 @@ export const api = {
   listen,
   initListeners,
   getRecorderState,
+  triggerManualCapture,
   setRecorderState,
   getTodaySummary,
   getEpisodesByDate,
+  getEpisodeById,
+  updateEpisodeTitleSummary,
   searchMemories,
   generateReport,
   saveToWiki,

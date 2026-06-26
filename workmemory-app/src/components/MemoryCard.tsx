@@ -174,7 +174,7 @@ function MemoryCard(props: MemoryCardProps): JSX.Element {
             left: 0,
             right: 0,
             background: 'var(--color-danger)',
-            color: '#FFFFFF',
+            color: 'var(--color-on-primary)',
             fontSize: 12,
             padding: '4px 12px',
             display: 'flex',
@@ -194,7 +194,7 @@ function MemoryCard(props: MemoryCardProps): JSX.Element {
             style={{
               background: 'transparent',
               border: 'none',
-              color: '#FFFFFF',
+              color: 'var(--color-on-primary)',
               cursor: 'pointer',
               textDecoration: 'underline',
               fontSize: 12,
@@ -437,24 +437,24 @@ function SkeletonCard({ showRailDot }: { showRailDot: boolean }): JSX.Element {
       {showRailDot && <span style={dotStyle} aria-hidden />}
       <div
         className="skeleton"
-        style={{ height: 14, width: 120, borderRadius: 4, marginBottom: 12 }}
+        style={{ height: 14, width: 120, borderRadius: 'var(--radius-sm)', marginBottom: 12 }}
       />
       <div
         className="skeleton"
-        style={{ height: 18, width: '60%', borderRadius: 4, marginBottom: 10 }}
+        style={{ height: 18, width: '60%', borderRadius: 'var(--radius-sm)', marginBottom: 10 }}
       />
       <div
         className="skeleton"
-        style={{ height: 12, width: '90%', borderRadius: 4, marginBottom: 6 }}
+        style={{ height: 12, width: '90%', borderRadius: 'var(--radius-sm)', marginBottom: 6 }}
       />
       <div
         className="skeleton"
-        style={{ height: 12, width: '75%', borderRadius: 4, marginBottom: 14 }}
+        style={{ height: 12, width: '75%', borderRadius: 'var(--radius-sm)', marginBottom: 14 }}
       />
       <div style={{ display: 'flex', gap: 8 }}>
-        <div className="skeleton" style={{ height: 18, width: 80, borderRadius: 9999 }} />
-        <div className="skeleton" style={{ height: 18, width: 70, borderRadius: 9999 }} />
-        <div className="skeleton" style={{ height: 18, width: 60, borderRadius: 9999 }} />
+        <div className="skeleton" style={{ height: 18, width: 80, borderRadius: 'var(--radius-round)' }} />
+        <div className="skeleton" style={{ height: 18, width: 70, borderRadius: 'var(--radius-round)' }} />
+        <div className="skeleton" style={{ height: 18, width: 60, borderRadius: 'var(--radius-round)' }} />
       </div>
     </div>
   );

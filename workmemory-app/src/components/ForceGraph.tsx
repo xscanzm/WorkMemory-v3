@@ -2,6 +2,8 @@
  * ForceGraph - 自研轻量力导向图引擎组件
  * P2 - 基于 Canvas 的力导向布局，禁止 d3/cytoscape 等重量库。
  * 严格遵循 Task 20 规范：5 类节点不同颜色 + 双击节点穿梭回 Episode。
+ *
+ * 颜色全部通过 getComputedStyle 读取 CSS 变量，无硬编码色值。
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { GraphNode, GraphEdge } from '@/types';
@@ -12,13 +14,13 @@ interface ForceGraphProps {
   onNodeDoubleClick?: (node: GraphNode) => void;
 }
 
-// 节点类型 → 颜色映射（对应 04_UI_SPEC.md 设计 token）
-const NODE_COLORS: Record<string, string> = {
-  person: '#2563EB',    // --color-primary
-  episode: '#10B981',   // --color-success
-  project: '#F59E0B',   // --color-warning
-  time: '#0D9488',      // --color-memory
-  document: '#8B5CF6',  // --color-private
+/** 节点类型 → CSS 变量名映射（运行时通过 getComputedStyle 解析为具体色值） */
+const NODE_TYPE_CSS_VARS: Record<string, string> = {
+  person: '--color-primary',
+  episode: '--color-success',
+  project: '--color-warning',
+  time: '--color-memory',
+  document: '--color-private',
 };
 
 interface SimNode {
@@ -34,6 +36,36 @@ interface SimNode {
   fixed: boolean;
 }
 
+/** Canvas 渲染所需的全部色值，从 CSS 变量解析 */
+interface CanvasColors {
+  nodeColors: Record<string, string>;
+  fallback: string;
+  edge: string;
+  edgeHover: string;
+  hoverStroke: string;
+  label: string;
+}
+
+/** 从 :root 读取 CSS 变量并解析为可用色值 */
+function resolveCanvasColors(): CanvasColors {
+  const styles = getComputedStyle(document.documentElement);
+  const get = (name: string): string =>
+    styles.getPropertyValue(name).trim() || '#6B7280';
+
+  const nodeColors: Record<string, string> = {};
+  for (const [type, varName] of Object.entries(NODE_TYPE_CSS_VARS)) {
+    nodeColors[type] = get(varName);
+  }
+  return {
+    nodeColors,
+    fallback: get('--color-node-fallback'),
+    edge: get('--color-canvas-edge'),
+    edgeHover: get('--color-canvas-edge-hover'),
+    hoverStroke: get('--color-on-primary'),
+    label: get('--color-canvas-label'),
+  };
+}
+
 export function ForceGraph({ nodes, edges, onNodeDoubleClick }: ForceGraphProps): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const simNodesRef = useRef<SimNode[]>([]);
@@ -41,6 +73,8 @@ export function ForceGraph({ nodes, edges, onNodeDoubleClick }: ForceGraphProps)
   const animRef = useRef<number | null>(null);
   const dragNodeRef = useRef<SimNode | null>(null);
   const hoverNodeRef = useRef<SimNode | null>(null);
+  const colorsRef = useRef<CanvasColors>(resolveCanvasColors());
+  const tickRef = useRef<(() => void) | null>(null);
   const [size, setSize] = useState({ w: 800, h: 600 });
 
   // 同步 props 到模拟状态
@@ -51,19 +85,24 @@ export function ForceGraph({ nodes, edges, onNodeDoubleClick }: ForceGraphProps)
     const h = canvas.clientHeight;
     setSize({ w, h });
 
+    // 颜色可能在主题切换后变化，重新解析
+    colorsRef.current = resolveCanvasColors();
+    const colors = colorsRef.current;
+
     // 保留已有位置（若 id 一致），否则随机初始化
     const prev = new Map(simNodesRef.current.map((n) => [n.id, n]));
     simNodesRef.current = nodes.map((n) => {
       const existing = prev.get(n.id);
       const radius = n.type === 'episode' ? 10 : 8;
+      const color = colors.nodeColors[n.type] ?? colors.fallback;
       if (existing) {
-        return { ...existing, label: n.label, type: n.type, color: NODE_COLORS[n.type] ?? '#6B7280', radius };
+        return { ...existing, label: n.label, type: n.type, color, radius };
       }
       return {
         id: n.id,
         label: n.label,
         type: n.type,
-        color: NODE_COLORS[n.type] ?? '#6B7280',
+        color,
         x: w / 2 + (Math.random() - 0.5) * 200,
         y: h / 2 + (Math.random() - 0.5) * 200,
         vx: 0,
@@ -92,6 +131,7 @@ export function ForceGraph({ nodes, edges, onNodeDoubleClick }: ForceGraphProps)
       const es = simEdgesRef.current;
       const cx = size.w / 2;
       const cy = size.h / 2;
+      const colors = colorsRef.current;
 
       // 库仑斥力（节点间）
       for (let i = 0; i < ns.length; i++) {
@@ -155,7 +195,7 @@ export function ForceGraph({ nodes, edges, onNodeDoubleClick }: ForceGraphProps)
         ctx.beginPath();
         ctx.moveTo(a.x, a.y);
         ctx.lineTo(b.x, b.y);
-        ctx.strokeStyle = highlighted ? 'rgba(37,99,235,0.8)' : 'rgba(229,233,240,0.6)';
+        ctx.strokeStyle = highlighted ? colors.edgeHover : colors.edge;
         ctx.lineWidth = highlighted ? 1.5 : 1;
         ctx.stroke();
       }
@@ -170,17 +210,17 @@ export function ForceGraph({ nodes, edges, onNodeDoubleClick }: ForceGraphProps)
         ctx.fill();
         if (isHover) {
           ctx.lineWidth = 2;
-          ctx.strokeStyle = '#FFFFFF';
+          ctx.strokeStyle = colors.hoverStroke;
           ctx.stroke();
         }
         // 标签
-        ctx.fillStyle = '#1E2330';
+        ctx.fillStyle = colors.label;
         ctx.font = '12px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText(n.label, n.x, n.y + n.radius + 14);
       }
 
-      // 收敛后停止（速度足够小）
+      // 收敛后停止（速度足够小且未在拖拽）
       if (totalSpeed < 0.5 && !dragNodeRef.current) {
         animRef.current = null;
         return;
@@ -188,9 +228,13 @@ export function ForceGraph({ nodes, edges, onNodeDoubleClick }: ForceGraphProps)
       animRef.current = requestAnimationFrame(tick);
     };
 
+    // 暴露 tick 给拖拽处理器复用
+    tickRef.current = tick;
+
     animRef.current = requestAnimationFrame(tick);
     return () => {
       if (animRef.current) cancelAnimationFrame(animRef.current);
+      tickRef.current = null;
     };
   }, [size, nodes, edges]);
 
@@ -225,12 +269,9 @@ export function ForceGraph({ nodes, edges, onNodeDoubleClick }: ForceGraphProps)
       drag.y = y;
       drag.vx = 0;
       drag.vy = 0;
-      // 拖拽中保持动画运行
-      if (!animRef.current) {
-        const tick = () => {
-          animRef.current = requestAnimationFrame(tick);
-        };
-        animRef.current = requestAnimationFrame(tick);
+      // 拖拽中复用主 tick 执行物理 + 渲染（修复空 tick bug）
+      if (!animRef.current && tickRef.current) {
+        animRef.current = requestAnimationFrame(tickRef.current);
       }
     } else {
       const n = findNode(x, y);
@@ -270,13 +311,11 @@ export function ForceGraph({ nodes, edges, onNodeDoubleClick }: ForceGraphProps)
       n.vy = 0;
       n.fixed = false;
     }
-    if (!animRef.current) {
-      const tick = () => { animRef.current = requestAnimationFrame(tick); };
-      animRef.current = requestAnimationFrame(tick);
+    if (!animRef.current && tickRef.current) {
+      animRef.current = requestAnimationFrame(tickRef.current);
     }
   };
 
-  // 暴露 relayout 给父组件（通过 ref 或 props.onReady）— 简化：用 data 属性触发
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
       <canvas

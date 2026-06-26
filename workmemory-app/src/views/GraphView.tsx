@@ -77,12 +77,9 @@ export default function GraphView(): JSX.Element {
     setSelectedNode(node);
     setSelectedEpisode(null);
     if (node.type === 'episode') {
-      // 反查对应 Episode：node.id 通常为 episode_id
       try {
-        // 简单实现：从今日 episodes 反查（实际生产可加 getEpisodeById IPC）
-        const today = new Date().toISOString().slice(0, 10);
-        const episodes = await api.getEpisodesByDate(today);
-        const found = episodes.find((ep) => ep.id === node.id || ep.title === node.label);
+        // 直接按 ID 查询，支持历史 Episode 穿梭
+        const found = await api.getEpisodeById(node.id);
         if (found) setSelectedEpisode(found);
       } catch (err) {
         console.warn('反查 Episode 失败', err);

@@ -66,7 +66,7 @@ const logoStyle: React.CSSProperties = {
   marginBottom: 12,
   background:
     'linear-gradient(135deg, var(--color-primary), var(--color-private))',
-  color: '#FFFFFF',
+  color: 'var(--color-on-primary)',
   fontSize: 16,
   fontWeight: 700,
   boxShadow: 'var(--shadow-subtle)',
@@ -129,7 +129,7 @@ function Sidebar(): JSX.Element {
                             top: 8,
                             bottom: 8,
                             width: 2,
-                            borderRadius: 2,
+                            borderRadius: 'var(--radius-sm)',
                             background: 'var(--color-primary)',
                           }}
                         />
@@ -147,7 +147,7 @@ function Sidebar(): JSX.Element {
                   sideOffset={8}
                   style={{
                     background: 'var(--color-text-main)',
-                    color: '#FFFFFF',
+                    color: 'var(--color-on-primary)',
                     padding: '4px 10px',
                     borderRadius: 'var(--radius-sm)',
                     fontSize: 12,

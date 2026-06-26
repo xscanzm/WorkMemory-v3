@@ -647,7 +647,7 @@ function MascotWindow(): JSX.Element {
 
   const quickCapture = async () => {
     try {
-      await api.invoke('capture_now');
+      await api.triggerManualCapture();
       showBubble('已快速捕捉 📸');
     } catch (err) {
       showBubble('捕捉失败');
@@ -879,7 +879,7 @@ function MascotWindow(): JSX.Element {
               maxWidth: 184,
               padding: '8px 12px',
               background: isPrivateBubble
-                ? 'rgba(139, 92, 246, 0.85)'
+                ? 'var(--color-private-glass)'
                 : 'var(--color-surface-glass)',
               backdropFilter: 'var(--blur-acrylic)',
               WebkitBackdropFilter: 'var(--blur-acrylic)',
@@ -888,7 +888,7 @@ function MascotWindow(): JSX.Element {
                   ? 'var(--color-private)'
                   : 'var(--color-border)'
               }`,
-              color: isPrivateBubble ? '#FFFFFF' : 'var(--color-text-main)',
+              color: isPrivateBubble ? 'var(--color-on-primary)' : 'var(--color-text-main)',
               fontSize: 13,
               lineHeight: 1.4,
               borderRadius: 'var(--radius-md)',
@@ -918,14 +918,14 @@ function MascotWindow(): JSX.Element {
                 border: 'none',
                 borderRadius: 'var(--radius-sm)',
                 color: isPrivateBubble
-                  ? 'rgba(255,255,255,0.85)'
+                  ? 'var(--color-on-private-soft)'
                   : 'var(--color-text-muted)',
                 cursor: 'pointer',
                 padding: 0,
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.background = isPrivateBubble
-                  ? 'rgba(255,255,255,0.15)'
+                  ? 'var(--color-on-private-hover)'
                   : 'var(--color-surface-subtle)';
               }}
               onMouseLeave={(e) => {
@@ -949,9 +949,9 @@ function MascotWindow(): JSX.Element {
                   marginTop: 6,
                   padding: '4px 12px',
                   background: isPrivateBubble
-                    ? 'rgba(255,255,255,0.2)'
+                    ? 'var(--color-on-private-action)'
                     : 'var(--color-primary)',
-                  color: isPrivateBubble ? '#FFFFFF' : '#FFFFFF',
+                  color: 'var(--color-on-primary)',
                   border: 'none',
                   borderRadius: 'var(--radius-sm)',
                   fontSize: 12,

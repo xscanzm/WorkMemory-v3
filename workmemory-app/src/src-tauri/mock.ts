@@ -411,18 +411,35 @@ export const invokeMock = async (command: string, args?: any): Promise<any> => {
       ];
     }
 
-    case 'get_graph':
+    case 'get_graph_data':
       return {
         nodes: [
-          { id: 'order', label: '订单系统', type: 'project', color: '#2563EB' },
-          { id: 'refund', label: '退款流程', type: 'topic', color: '#0D9488' },
-          { id: 'retry', label: 'RetryMiddleware', type: 'entity', color: '#8B5CF6' },
+          { id: 'ep-001', label: '推进订单退款字段确认', type: 'episode', color: '' },
+          { id: 'ep-002', label: '测试验证与 Debug', type: 'episode', color: '' },
+          { id: 'proj-order', label: '订单系统', type: 'project', color: '' },
+          { id: 'person-zhang', label: '前端同事', type: 'person', color: '' },
+          { id: 'time-today', label: '2026-06-26', type: 'time', color: '' },
+          { id: 'wiki-refund', label: '订单退款流程', type: 'document', color: '' },
         ],
         edges: [
-          { source: 'order', target: 'refund', label: '包含' },
-          { source: 'refund', target: 'retry', label: '依赖' },
+          { source: 'ep-001', target: 'proj-order', label: '属于' },
+          { source: 'ep-001', target: 'person-zhang', label: '涉及' },
+          { source: 'ep-001', target: 'time-today', label: '发生在' },
+          { source: 'ep-002', target: 'proj-order', label: '属于' },
+          { source: 'ep-002', target: 'time-today', label: '发生在' },
+          { source: 'wiki-refund', target: 'ep-001', label: '来源' },
         ],
       };
+
+    case 'get_episode_by_id': {
+      const id = args?.id as string;
+      const found = MOCK_EPISODES.find((e) => e.id === id);
+      return found ?? null;
+    }
+
+    case 'update_episode_title_summary':
+      // 接收 { id, title, summary }，mock 直接成功
+      return null;
 
     case 'get_wiki_pages':
       return MOCK_WIKI_PAGES;
@@ -437,15 +454,9 @@ export const invokeMock = async (command: string, args?: any): Promise<any> => {
         (e) => e.wikiEligible && e.wikiStatus === 'eligible',
       );
 
-    case 'get_reports':
-      return [MOCK_REPORT];
-
-    case 'capture_now':
-      return { ok: true, segmentId: 'seg-' + Date.now() };
-
-    case 'hide_mascot':
-    case 'show_mascot':
-      return null;
+    case 'trigger_manual_capture':
+      // Ghost Capture：返回 OCR 纯文本（与后端 Result<String, String> 对齐）
+      return '识别到一段文字内容（mock）';
 
     default:
       // 未知命令返回 null，避免阻塞 UI

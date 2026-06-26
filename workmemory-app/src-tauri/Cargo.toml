@@ -41,7 +41,6 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Imaging",
     "Media_Ocr",
-    "Media_TextRecognition",
     "Graphics_Imaging",
     "Foundation",
     "Globalization",

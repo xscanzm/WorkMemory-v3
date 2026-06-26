@@ -27,6 +27,18 @@
   --color-private: #8B5CF6;            /* 隐私守护紫 */
   --color-private-soft: #F5F3FF;
   --color-memory: #0D9488;             /* 沉淀历史青 */
+  --color-on-primary: #FFFFFF;        /* 主色调按钮上的文字色（白色） */
+  --color-on-danger: #FFFFFF;         /* 危险色按钮上的文字色 */
+  --color-private-glass: rgba(139, 92, 246, 0.85); /* 隐私气泡毛玻璃背景 */
+  --color-on-private-soft: rgba(255, 255, 255, 0.85); /* 隐私气泡上次要文字色 */
+  --color-on-private-hover: rgba(255, 255, 255, 0.15); /* 隐私气泡上按钮 hover 背景 */
+  --color-on-private-action: rgba(255, 255, 255, 0.2); /* 隐私气泡上动作按钮背景 */
+  --color-scrollbar-thumb: rgba(0, 0, 0, 0.15); /* 自定义滚动条 thumb */
+  --color-highlight-mark: rgba(245, 158, 11, 0.25); /* 搜索关键字高亮（04_UI_SPEC §3.5） */
+  --color-canvas-edge: rgba(229, 233, 240, 0.6); /* Canvas 边线默认色 */
+  --color-canvas-edge-hover: rgba(37, 99, 235, 0.8); /* Canvas 边线高亮色 */
+  --color-canvas-label: #1E2330;      /* Canvas 标签文字色 */
+  --color-node-fallback: #6B7280;     /* Canvas 节点 fallback 色 */
 
   /* 3. 精细圆角 (Border Radius) */
   --radius-sm: 4px;

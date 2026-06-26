@@ -180,12 +180,15 @@ export default function TodayView(): JSX.Element {
                         .catch((e) => console.error('[saveToWiki]', e));
                     }}
                     onEditTitle={(id, title, summary) => {
-                      // P0：本地立即更新 store，后端 updateEpisodeTitleSummary 接入后替换
+                      // 乐观更新：本地立即刷新 store，后台异步持久化
                       setEpisodes(
                         episodes.map((e) =>
                           e.id === id ? { ...e, title, summary } : e,
                         ),
                       );
+                      api
+                        .updateEpisodeTitleSummary(id, title, summary)
+                        .catch((e) => console.error('[updateEpisodeTitleSummary]', e));
                     }}
                   />
                 ))}
@@ -198,12 +201,12 @@ export default function TodayView(): JSX.Element {
           style={{
             width: 6,
             background: 'transparent',
-            borderRadius: 3,
+            borderRadius: 'var(--radius-sm)',
             padding: 2,
           }}
         >
           <ScrollArea.Thumb
-            style={{ background: 'rgba(0,0,0,0.15)', borderRadius: 3 }}
+            style={{ background: 'var(--color-scrollbar-thumb)', borderRadius: 'var(--radius-sm)' }}
           />
         </ScrollArea.Scrollbar>
         <ScrollArea.Corner />
@@ -414,7 +417,7 @@ function iconBtn(primary: boolean): React.CSSProperties {
     border: '1px solid var(--color-border)',
     borderRadius: 'var(--radius-md)',
     background: primary ? 'var(--color-primary)' : 'var(--color-surface)',
-    color: primary ? '#FFFFFF' : 'var(--color-text-muted)',
+    color: primary ? 'var(--color-on-primary)' : 'var(--color-text-muted)',
     cursor: 'pointer',
     transition:
       'background var(--duration-fast) var(--ease-out-expo), color var(--duration-fast) var(--ease-out-expo)',
@@ -514,7 +517,7 @@ function EmptyState({ mascotId }: { mascotId: number }): JSX.Element {
           padding: '8px 20px',
           fontSize: 13,
           fontWeight: 600,
-          color: '#FFFFFF',
+          color: 'var(--color-on-primary)',
           background: 'var(--color-primary)',
           border: 'none',
           borderRadius: 'var(--radius-md)',

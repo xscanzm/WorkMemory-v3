@@ -74,6 +74,17 @@ pub async fn get_episodes_by_date(
     repository::get_episodes_by_date(&conn, &date).map_err(|e| e.to_string())
 }
 
+/// 按 ID 获取单个 Episode（用于图谱节点双击穿梭回历史 Episode）。
+#[tauri::command]
+pub async fn get_episode_by_id(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<Option<models::CleanEpisode>, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    repository::get_episode_by_id(&conn, &id).map_err(|e| e.to_string())
+}
+
 /// 用户手动编辑 Episode 标题与摘要。
 #[tauri::command]
 pub async fn update_episode_title_summary(
@@ -481,7 +492,8 @@ pub async fn get_graph_data(app: tauri::AppHandle) -> Result<models::GraphData, 
             id: page.id.clone(),
             label: page.title.clone(),
             r#type: "document".to_string(),
-            color: "#8B5CF6".to_string(),
+            // color 字段保留为空：前端 ForceGraph 按 type→CSS 变量派生颜色
+            color: String::new(),
         });
         wiki_title_to_id.insert(page.title.clone(), page.id.clone());
         if let Some(ref ep_id) = page.source_episode_id {
@@ -524,7 +536,7 @@ pub async fn get_graph_data(app: tauri::AppHandle) -> Result<models::GraphData, 
                 title.clone()
             },
             r#type: "episode".to_string(),
-            color: "#10B981".to_string(),
+            color: String::new(),
         });
 
         // project 节点（非空时），HashSet 去重
@@ -535,7 +547,7 @@ pub async fn get_graph_data(app: tauri::AppHandle) -> Result<models::GraphData, 
                     id: project_node_id.clone(),
                     label: project.clone(),
                     r#type: "project".to_string(),
-                    color: "#F59E0B".to_string(),
+                    color: String::new(),
                 });
             }
             edges.push(models::GraphEdge {
@@ -554,7 +566,7 @@ pub async fn get_graph_data(app: tauri::AppHandle) -> Result<models::GraphData, 
                     id: person_node_id.clone(),
                     label: entity.clone(),
                     r#type: "person".to_string(),
-                    color: "#2563EB".to_string(),
+                    color: String::new(),
                 });
             }
             edges.push(models::GraphEdge {
@@ -572,7 +584,7 @@ pub async fn get_graph_data(app: tauri::AppHandle) -> Result<models::GraphData, 
                     id: time_node_id.clone(),
                     label: date.clone(),
                     r#type: "time".to_string(),
-                    color: "#0D9488".to_string(),
+                    color: String::new(),
                 });
             }
             edges.push(models::GraphEdge {
@@ -629,6 +641,61 @@ fn extract_wikilinks(content: &str) -> Vec<String> {
         i += 1;
     }
     links
+}
+
+// ============================================================
+// Mascot 资源
+// ============================================================
+
+/// 列出全部 9 个桌面伙伴的元信息（从打包资源 pet/{1..9}/pet.json 读取）。
+///
+/// 返回 Vec<MascotInfo>，字段：id / display_name / description。
+/// 读取失败时跳过该伙伴（不阻断整体返回）。
+#[tauri::command]
+pub async fn list_mascots(app: tauri::AppHandle) -> Result<Vec<MascotInfo>, String> {
+    use tauri::Manager;
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("无法获取 resource_dir: {}", e))?;
+    let pet_dir = resource_dir.join("pet");
+    let mut result = Vec::new();
+    for id in 1..=9 {
+        let pet_json_path = pet_dir.join(id.to_string()).join("pet.json");
+        match std::fs::read_to_string(&pet_json_path) {
+            Ok(content) => {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                    result.push(MascotInfo {
+                        id,
+                        display_name: v
+                            .get("displayName")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("Unknown")
+                            .to_string(),
+                        description: v
+                            .get("description")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    });
+                }
+            }
+            Err(_) => {
+                // 资源缺失时跳过，不阻断
+                log::warn!("Mascot pet.json 缺失: {:?}", pet_json_path);
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// 桌面伙伴元信息 DTO（对应前端 types/index.ts MascotInfo）。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MascotInfo {
+    pub id: i64,
+    pub display_name: String,
+    pub description: String,
 }
 
 // ============================================================

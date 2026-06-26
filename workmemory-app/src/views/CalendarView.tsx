@@ -430,7 +430,7 @@ export default function CalendarView(): JSX.Element {
                           style={{
                             height: 3,
                             width: `${Math.round(intensity * 100)}%`,
-                            borderRadius: 2,
+                            borderRadius: 'var(--radius-sm)',
                             background:
                               'linear-gradient(90deg, var(--color-success), var(--color-memory))',
                           }}

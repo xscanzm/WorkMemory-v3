@@ -153,7 +153,7 @@ export default function SettingsView(): JSX.Element {
           <div
             key={i}
             className="skeleton"
-            style={{ height: 80, borderRadius: 12, marginBottom: 12 }}
+            style={{ height: 80, borderRadius: 'var(--radius-lg)', marginBottom: 12 }}
           />
         ))}
       </div>
@@ -262,7 +262,7 @@ export default function SettingsView(): JSX.Element {
                   border: 'none',
                   borderRadius: 'var(--radius-md)',
                   background: saving ? 'var(--color-border)' : 'var(--color-primary)',
-                  color: '#FFFFFF',
+                  color: 'var(--color-on-primary)',
                   cursor: saving ? 'not-allowed' : 'pointer',
                   opacity: saving ? 0.7 : 1,
                 }}
@@ -460,7 +460,7 @@ export default function SettingsView(): JSX.Element {
         orientation="vertical"
         style={{ width: 6, padding: 2, background: 'transparent' }}
       >
-        <ScrollArea.Thumb style={{ background: 'rgba(0,0,0,0.15)', borderRadius: 3 }} />
+        <ScrollArea.Thumb style={{ background: 'var(--color-scrollbar-thumb)', borderRadius: 'var(--radius-sm)' }} />
       </ScrollArea.Scrollbar>
       <ScrollArea.Corner />
     </ScrollArea.Root>
@@ -567,7 +567,7 @@ function SwitchRow({
       style={{
         width: 36,
         height: 20,
-        borderRadius: 9999,
+        borderRadius: 'var(--radius-round)',
         background: checked ? 'var(--color-primary)' : 'var(--color-border)',
         border: 'none',
         position: 'relative',
@@ -582,8 +582,8 @@ function SwitchRow({
           top: 2,
           width: 16,
           height: 16,
-          borderRadius: 9999,
-          background: '#FFFFFF',
+          borderRadius: 'var(--radius-round)',
+          background: 'var(--color-surface)',
           transition: 'transform 150ms var(--ease-out-expo)',
           transform: checked ? 'translateX(16px)' : 'translateX(0)',
           boxShadow: 'var(--shadow-subtle)',
@@ -616,7 +616,7 @@ function SliderRow({
           flex: 1,
           height: 4,
           background: 'var(--color-border)',
-          borderRadius: 2,
+          borderRadius: 'var(--radius-sm)',
         }}
       >
         <Slider.Range
@@ -624,7 +624,7 @@ function SliderRow({
             position: 'absolute',
             height: 4,
             background: 'var(--color-primary)',
-            borderRadius: 2,
+            borderRadius: 'var(--radius-sm)',
           }}
         />
       </Slider.Track>
@@ -633,8 +633,8 @@ function SliderRow({
           display: 'block',
           width: 16,
           height: 16,
-          borderRadius: 9999,
-          background: '#FFFFFF',
+          borderRadius: 'var(--radius-round)',
+          background: 'var(--color-surface)',
           border: '2px solid var(--color-primary)',
           marginLeft: -8,
           cursor: 'grab',

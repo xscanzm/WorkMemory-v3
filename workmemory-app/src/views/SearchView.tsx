@@ -5,7 +5,7 @@
  * - 顶部大圆角搜索框（--radius-lg，--shadow-card，左侧 Search 图标）+ Ctrl+K 聚焦
  * - 回车触发 api.searchMemories(query, dateRange)
  * - 结果双栏：左栏 Episode Matches（sourceType !== 'segment'）/ 右栏 OCR Snippets（segment）
- * - ==关键字== 浅黄高亮渲染（rgba(245,158,11,0.25) + border-radius:2px）
+ * - ==关键字== 浅黄高亮渲染（var(--color-highlight-mark) + var(--radius-sm)）
  * - 命中原因标签：💡 OCR 匹配 / 🏷️ 标签匹配 / 🔗 Wiki 关联 / 🧠 语义命中
  * - 双击 OCR Snippet：右侧 Context 面板反查 Segment 详情
  * - 空状态 / 无结果 / 加载骨架
@@ -30,8 +30,8 @@ function renderSnippet(snippet: string): ReactNode[] {
       <mark
         key={i++}
         style={{
-          background: 'rgba(245,158,11,0.25)',
-          borderRadius: 2,
+          background: 'var(--color-highlight-mark)',
+          borderRadius: 'var(--radius-sm)',
           padding: '0 2px',
         }}
       >

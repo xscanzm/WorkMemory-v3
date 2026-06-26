@@ -196,7 +196,7 @@ export default function ReportsView(): JSX.Element {
                     <div
                       key={i}
                       className="skeleton"
-                      style={{ height: 44, borderRadius: 6, marginBottom: 8 }}
+                      style={{ height: 44, borderRadius: 'var(--radius-md)', marginBottom: 8 }}
                     />
                   ))}
                 </div>
@@ -254,7 +254,7 @@ export default function ReportsView(): JSX.Element {
                           height: 16,
                           marginTop: 2,
                           flexShrink: 0,
-                          borderRadius: 4,
+                          borderRadius: 'var(--radius-sm)',
                           border: checked
                             ? '1px solid var(--color-primary)'
                             : '1px solid var(--color-border-hover)',
@@ -268,7 +268,7 @@ export default function ReportsView(): JSX.Element {
                         }}
                       >
                         <Checkbox.Indicator>
-                          <Check size={12} color="#FFFFFF" strokeWidth={3} />
+                          <Check size={12} color="var(--color-on-primary)" strokeWidth={3} />
                         </Checkbox.Indicator>
                       </Checkbox.Root>
                       <div style={{ flex: 1, minWidth: 0 }}>
@@ -306,7 +306,7 @@ export default function ReportsView(): JSX.Element {
             style={{ width: 6, padding: 2, background: 'transparent' }}
           >
             <ScrollArea.Thumb
-              style={{ background: 'rgba(0,0,0,0.15)', borderRadius: 3 }}
+              style={{ background: 'var(--color-scrollbar-thumb)', borderRadius: 'var(--radius-sm)' }}
             />
           </ScrollArea.Scrollbar>
           <ScrollArea.Corner />
@@ -446,15 +446,15 @@ export default function ReportsView(): JSX.Element {
               <div style={{ width: '80%', maxWidth: 460 }}>
                 <div
                   className="skeleton"
-                  style={{ height: 14, borderRadius: 4, marginBottom: 8 }}
+                  style={{ height: 14, borderRadius: 'var(--radius-sm)', marginBottom: 8 }}
                 />
                 <div
                   className="skeleton"
-                  style={{ height: 14, width: '85%', borderRadius: 4, marginBottom: 8 }}
+                  style={{ height: 14, width: '85%', borderRadius: 'var(--radius-sm)', marginBottom: 8 }}
                 />
                 <div
                   className="skeleton"
-                  style={{ height: 14, width: '70%', borderRadius: 4 }}
+                  style={{ height: 14, width: '70%', borderRadius: 'var(--radius-sm)' }}
                 />
               </div>
             </div>
@@ -769,7 +769,7 @@ function primaryBtn(disabled: boolean): React.CSSProperties {
     border: 'none',
     borderRadius: 'var(--radius-md)',
     background: disabled ? 'var(--color-border)' : 'var(--color-primary)',
-    color: '#FFFFFF',
+    color: 'var(--color-on-primary)',
     cursor: disabled ? 'not-allowed' : 'pointer',
     opacity: disabled ? 0.7 : 1,
   };

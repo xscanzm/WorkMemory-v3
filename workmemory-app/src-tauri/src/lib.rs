@@ -70,6 +70,8 @@ pub fn run() {
             ipc::commands::get_wiki_page,
             ipc::commands::get_review_queue,
             ipc::commands::get_graph_data,
+            ipc::commands::get_episode_by_id,
+            ipc::commands::list_mascots,
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 启动失败");

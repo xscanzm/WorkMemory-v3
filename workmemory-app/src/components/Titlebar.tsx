@@ -131,7 +131,7 @@ function Titlebar(): JSX.Element {
             style={baseBtnStyle}
             onMouseEnter={(e) => {
               e.currentTarget.style.background = 'var(--color-danger)';
-              e.currentTarget.style.color = '#FFFFFF';
+              e.currentTarget.style.color = 'var(--color-on-primary)';
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.background = 'transparent';

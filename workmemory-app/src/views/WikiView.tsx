@@ -67,11 +67,11 @@ const WV_CSS = `
 }
 .wv-btn:hover { background: var(--color-surface-subtle); border-color: var(--color-border-hover); }
 .wv-btn:disabled { opacity:0.6; cursor:not-allowed; }
-.wv-btn-primary { background: var(--color-primary); color:#fff; border-color: var(--color-primary); }
+.wv-btn-primary { background: var(--color-primary); color: var(--color-on-primary); border-color: var(--color-primary); }
 .wv-btn-primary:hover { background: var(--color-primary); filter: brightness(1.06); }
 .wv-btn-mini { height:24px; padding: 0 var(--space-sm); font-size:12px; }
 .wv-badge {
-  min-width:18px; height:18px; padding: 0 5px; background: var(--color-danger); color:#fff;
+  min-width:18px; height:18px; padding: 0 5px; background: var(--color-danger); color: var(--color-on-danger);
   border-radius: var(--radius-round); font-size:11px; font-weight:700;
   display:inline-flex; align-items:center; justify-content:center; line-height:1;
 }
@@ -99,7 +99,7 @@ const WV_CSS = `
 .wv-review-item:hover { background: var(--color-surface-subtle); }
 .wv-accept {
   height:24px; padding: 0 var(--space-sm); font-size:12px; font-weight:600;
-  background: var(--color-primary); color:#fff; border:none; border-radius: var(--radius-sm);
+  background: var(--color-primary); color: var(--color-on-primary); border:none; border-radius: var(--radius-sm);
   cursor:pointer; display:inline-flex; align-items:center; gap: var(--space-2xs);
   transition: filter var(--duration-fast) var(--ease-out-expo);
 }

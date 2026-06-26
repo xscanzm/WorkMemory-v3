@@ -133,6 +133,10 @@ function MascotWindow(): JSX.Element {
 
   const dragRef = useRef<DragState | null>(null);
 
+  // ===== 拖拽 RAF 节流：避免 pointermove 高频调用 setPosition =====
+  const dragTargetRef = useRef<{ x: number; y: number } | null>(null);
+  const dragRafRef = useRef<number | null>(null);
+
   // ===== 跨窗口导航主窗口（show + setFocus + 改 hash 路由） =====
   const navigateMain = useCallback(async (path: string, hash?: string) => {
     if (!api.isTauri()) return;
@@ -518,13 +522,31 @@ function MascotWindow(): JSX.Element {
     const dy = e.clientY - ds.startClientY;
     const newX = ds.startWinX + dx;
     const newY = ds.startWinY + dy;
-    void getCurrentWindow().setPosition(new LogicalPosition(newX, newY));
+    // RAF 节流：仅记录目标坐标，下一帧统一 flush，避免高频 setPosition
+    dragTargetRef.current = { x: newX, y: newY };
+    if (dragRafRef.current === null) {
+      dragRafRef.current = requestAnimationFrame(() => {
+        dragRafRef.current = null;
+        const target = dragTargetRef.current;
+        if (target) {
+          void getCurrentWindow().setPosition(
+            new LogicalPosition(target.x, target.y),
+          );
+        }
+      });
+    }
   };
 
   const onPointerUp = async (e: React.PointerEvent) => {
     const wasDragging = dragRef.current !== null;
     dragRef.current = null;
     if (!wasDragging) return;
+
+    // 取消尚未 flush 的 RAF，避免抬手后窗口再跳一次
+    if (dragRafRef.current !== null) {
+      cancelAnimationFrame(dragRafRef.current);
+      dragRafRef.current = null;
+    }
 
     try {
       (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);

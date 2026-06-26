@@ -101,13 +101,16 @@ pub async fn update_episode_title_summary(
 pub async fn search_memories(
     app: tauri::AppHandle,
     query: String,
-    date_range: Option<(String, String)>,
+    date_range: Option<DateRange>,
 ) -> Result<Vec<models::SearchResult>, String> {
+    // 前端 api.ts 发送 {from, to} 对象，serde 无法反序列化为元组 (String, String)，
+    // 这里先反序列化为 DateRange 结构体，再转换为 repository 层期望的元组。
+    let dr_tuple = date_range.map(|d| (d.from, d.to));
     let (mut results, embedding_enabled) = {
         let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
         let conn = state.lock().map_err(|e| e.to_string())?;
         let results =
-            repository::search_memories(&conn, &query, date_range).map_err(|e| e.to_string())?;
+            repository::search_memories(&conn, &query, dr_tuple).map_err(|e| e.to_string())?;
         let settings = repository::get_settings(&conn).map_err(|e| e.to_string())?;
         (results, settings.embedding_enabled)
     };
@@ -116,6 +119,14 @@ pub async fn search_memories(
         results.extend(vec_results);
     }
     Ok(results)
+}
+
+/// 日期范围筛选器（前端发送 `{from, to}` 对象，对应 ISO 日期字符串）。
+/// 反序列化为结构体后再转换为 repository 层期望的 `(String, String)` 元组。
+#[derive(serde::Deserialize)]
+struct DateRange {
+    from: String,
+    to: String,
 }
 
 // ============================================================
@@ -138,9 +149,9 @@ pub async fn save_to_wiki(
         id: uuid::Uuid::new_v4().to_string(),
         title,
         content,
-        source_type: "episode".to_string(),
+        source_type: "ai".to_string(),
         source_episode_id: Some(episode_id.clone()),
-        status: "saved".to_string(),
+        status: "draft".to_string(),
         tags,
         created_at: now.clone(),
         updated_at: now,
@@ -288,7 +299,13 @@ pub async fn get_calendar_month(
     Ok(result)
 }
 
-/// 获取当日洞察：统计时间分布、应用切换频率、未完成 todos，返回 Vec<Insight>。
+/// 获取当日洞察：时间分布 / 频繁切换 / 未完成线索 / 深度专注，返回 Vec<Insight>。
+///
+/// insight type 与前端 InsightsView.tsx 对齐：
+///   - "time_distribution"：各应用时长分布（metadata.apps）
+///   - "fragmented_switch"：应用切换频繁（warning）
+///   - "open_todo"：未完成线索（metadata.episodes，仅含 todos 非空的 episode）
+///   - "deep_focus"：连续 ≥25 分钟单应用片段（metadata.sessions）
 #[tauri::command]
 pub async fn get_insights(
     app: tauri::AppHandle,
@@ -299,29 +316,41 @@ pub async fn get_insights(
     let now = chrono::Local::now().format("%+").to_string();
     let mut insights = Vec::new();
 
-    // 1. 当日总记录时长
-    let total_duration: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(duration_seconds), 0) FROM segments \
-             WHERE date = ?1 AND is_deleted = 0",
-            rusqlite::params![date],
-            |row| row.get(0),
+    // 1. 时间分布（type=time_distribution，metadata.apps）
+    let mut stmt = conn
+        .prepare(
+            "SELECT process_name, SUM(duration_seconds) FROM segments \
+             WHERE date = ?1 AND is_deleted = 0 AND is_private = 0 \
+             GROUP BY process_name ORDER BY SUM(duration_seconds) DESC LIMIT 10",
         )
         .map_err(|e| e.to_string())?;
-    if total_duration > 0 {
-        let hours = total_duration / 3600;
-        let minutes = (total_duration % 3600) / 60;
+    let apps: Vec<(String, i64)> = stmt
+        .query_map(rusqlite::params![date], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    if !apps.is_empty() {
+        let total: i64 = apps.iter().map(|(_, s)| s).sum();
+        let hours = total / 3600;
+        let minutes = (total % 3600) / 60;
+        let apps_json: Vec<serde_json::Value> = apps
+            .iter()
+            .map(|(app, secs)| serde_json::json!({"app": app, "seconds": secs}))
+            .collect();
         insights.push(models::Insight {
             id: uuid::Uuid::new_v4().to_string(),
-            r#type: "duration".to_string(),
-            title: "今日记录时长".to_string(),
+            r#type: "time_distribution".to_string(),
+            title: "今日时间分布".to_string(),
             description: format!("共记录 {} 小时 {} 分钟", hours, minutes),
             severity: "info".to_string(),
+            metadata: Some(serde_json::json!({"apps": apps_json}).to_string()),
             created_at: now.clone(),
         });
     }
 
-    // 2. 应用切换频率
+    // 2. 频繁切换（type=fragmented_switch，warning）
     let switch_count: i64 = conn
         .query_row(
             "SELECT COUNT(DISTINCT process_name) FROM segments \
@@ -333,29 +362,80 @@ pub async fn get_insights(
     if switch_count > 5 {
         insights.push(models::Insight {
             id: uuid::Uuid::new_v4().to_string(),
-            r#type: "focus".to_string(),
+            r#type: "fragmented_switch".to_string(),
             title: "应用切换频繁".to_string(),
             description: format!(
                 "今日切换了 {} 个不同应用，可能影响专注度",
                 switch_count
             ),
             severity: "warning".to_string(),
+            metadata: None,
             created_at: now.clone(),
         });
     }
 
-    // 3. 未完成 todos（聚合当日所有 Episode 的 todos）
+    // 3. 未完成线索（type=open_todo，metadata.episodes，仅含 todos 非空的 episode）
     let episodes =
         repository::get_episodes_by_date(&conn, &date).map_err(|e| e.to_string())?;
-    let total_todos: usize = episodes.iter().map(|e| e.todos.len()).sum();
-    if total_todos > 0 {
+    let todo_episodes: Vec<&models::CleanEpisode> = episodes
+        .iter()
+        .filter(|e| !e.todos.is_empty())
+        .collect();
+    if !todo_episodes.is_empty() {
+        let total_todos: usize = todo_episodes.iter().map(|e| e.todos.len()).sum();
+        let eps_json: Vec<serde_json::Value> = todo_episodes
+            .iter()
+            .map(|ep| serde_json::json!({"title": ep.title, "todos": ep.todos}))
+            .collect();
         insights.push(models::Insight {
             id: uuid::Uuid::new_v4().to_string(),
-            r#type: "todo".to_string(),
+            r#type: "open_todo".to_string(),
             title: "待办事项".to_string(),
             description: format!("当日共 {} 条待办", total_todos),
             severity: "info".to_string(),
-            created_at: now,
+            metadata: Some(serde_json::json!({"episodes": eps_json}).to_string()),
+            created_at: now.clone(),
+        });
+    }
+
+    // 4. 深度专注统计（type=deep_focus，连续 ≥25 分钟单应用片段，metadata.sessions）
+    let mut stmt = conn
+        .prepare(
+            "SELECT process_name, start_time, end_time, duration_seconds FROM segments \
+             WHERE date = ?1 AND is_deleted = 0 AND is_private = 0 AND duration_seconds >= 1500 \
+             ORDER BY start_time",
+        )
+        .map_err(|e| e.to_string())?;
+    let sessions: Vec<(String, String, String, i64)> = stmt
+        .query_map(rusqlite::params![date], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    if !sessions.is_empty() {
+        let n = sessions.len();
+        let max_dur = sessions.iter().map(|(_, _, _, d)| *d).max().unwrap_or(0);
+        let max_min = max_dur / 60;
+        let sessions_json: Vec<serde_json::Value> = sessions
+            .iter()
+            .map(|(app, start, _end, dur)| {
+                serde_json::json!({"app": app, "duration": dur, "start": start})
+            })
+            .collect();
+        insights.push(models::Insight {
+            id: uuid::Uuid::new_v4().to_string(),
+            r#type: "deep_focus".to_string(),
+            title: "深度专注".to_string(),
+            description: format!("今日有 {} 段深度专注，最长 {} 分钟", n, max_min),
+            severity: "info".to_string(),
+            metadata: Some(serde_json::json!({"sessions": sessions_json}).to_string()),
+            created_at: now.clone(),
         });
     }
 
@@ -366,12 +446,20 @@ pub async fn get_insights(
 // 关系图谱
 // ============================================================
 
-/// 计算 Wiki + Episode + Entity 关系图谱数据。
+/// 计算关系图谱数据。
 ///
-/// 节点类型：wiki（绿）/ episode（蓝）/ entity（橙）。
+/// 节点类型（5 类，颜色与前端 ForceGraph NODE_COLORS 对齐）：
+///   - document：Wiki 页面（#8B5CF6）
+///   - episode：逻辑事件（#10B981）
+///   - project：Episode.project（#F59E0B）
+///   - person：Episode.entities 中的人名（#2563EB）
+///   - time：Episode.date（#0D9488）
 /// 边：
-///   - wiki → episode（source_episode_id，label="来源"）
-///   - episode → entity（episode.entities，label="涉及"）
+///   - document → episode（source_episode_id，label="来源"）
+///   - episode → project（label="属于"）
+///   - episode → person（label="涉及"）
+///   - episode → time（label="发生在"）
+///   - document → document（[[wikilink]] 引用，label="引用"）
 #[tauri::command]
 pub async fn get_graph_data(app: tauri::AppHandle) -> Result<models::GraphData, String> {
     let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
@@ -379,15 +467,23 @@ pub async fn get_graph_data(app: tauri::AppHandle) -> Result<models::GraphData, 
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
 
-    // 1. Wiki 节点 + Wiki→Episode 边
+    let mut project_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut person_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut time_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // 1. Wiki → document 节点 + document→episode 边
     let wiki_pages = repository::get_wiki_pages(&conn, 100).map_err(|e| e.to_string())?;
+    // 标题→id 映射，供 [[wikilink]] 双链解析使用
+    let mut wiki_title_to_id: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for page in &wiki_pages {
         nodes.push(models::GraphNode {
             id: page.id.clone(),
             label: page.title.clone(),
-            r#type: "wiki".to_string(),
-            color: "#4CAF50".to_string(),
+            r#type: "document".to_string(),
+            color: "#8B5CF6".to_string(),
         });
+        wiki_title_to_id.insert(page.title.clone(), page.id.clone());
         if let Some(ref ep_id) = page.source_episode_id {
             edges.push(models::GraphEdge {
                 source: page.id.clone(),
@@ -397,27 +493,29 @@ pub async fn get_graph_data(app: tauri::AppHandle) -> Result<models::GraphData, 
         }
     }
 
-    // 2. Episode 节点 + Episode→Entity 边
+    // 2. Episode 节点 + project/person/time 节点与边
     let mut stmt = conn
         .prepare(
-            "SELECT id, title, entities FROM clean_episodes \
+            "SELECT id, title, entities, project, date FROM clean_episodes \
              ORDER BY updated_at DESC LIMIT 100",
         )
         .map_err(|e| e.to_string())?;
-    let episode_rows: Vec<(String, String, String)> = stmt
+    let episode_rows: Vec<(String, String, String, String, String)> = stmt
         .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
             ))
         })
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
 
-    let mut entity_set: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for (ep_id, title, entities_json) in &episode_rows {
+    for (ep_id, title, entities_json, project, date) in &episode_rows {
+        // episode 节点
         nodes.push(models::GraphNode {
             id: ep_id.clone(),
             label: if title.is_empty() {
@@ -426,28 +524,111 @@ pub async fn get_graph_data(app: tauri::AppHandle) -> Result<models::GraphData, 
                 title.clone()
             },
             r#type: "episode".to_string(),
-            color: "#2196F3".to_string(),
+            color: "#10B981".to_string(),
         });
-        let entities: Vec<String> = serde_json::from_str(entities_json).unwrap_or_default();
-        for entity in &entities {
-            let entity_node_id = format!("entity:{}", entity);
-            if entity_set.insert(entity.clone()) {
+
+        // project 节点（非空时），HashSet 去重
+        if !project.is_empty() {
+            let project_node_id = format!("project:{}", project);
+            if project_set.insert(project.clone()) {
                 nodes.push(models::GraphNode {
-                    id: entity_node_id.clone(),
-                    label: entity.clone(),
-                    r#type: "entity".to_string(),
-                    color: "#FF9800".to_string(),
+                    id: project_node_id.clone(),
+                    label: project.clone(),
+                    r#type: "project".to_string(),
+                    color: "#F59E0B".to_string(),
                 });
             }
             edges.push(models::GraphEdge {
                 source: ep_id.clone(),
-                target: entity_node_id,
+                target: project_node_id,
+                label: "属于".to_string(),
+            });
+        }
+
+        // person 节点（Episode.entities），HashSet 去重
+        let entities: Vec<String> = serde_json::from_str(entities_json).unwrap_or_default();
+        for entity in &entities {
+            let person_node_id = format!("person:{}", entity);
+            if person_set.insert(entity.clone()) {
+                nodes.push(models::GraphNode {
+                    id: person_node_id.clone(),
+                    label: entity.clone(),
+                    r#type: "person".to_string(),
+                    color: "#2563EB".to_string(),
+                });
+            }
+            edges.push(models::GraphEdge {
+                source: ep_id.clone(),
+                target: person_node_id,
                 label: "涉及".to_string(),
+            });
+        }
+
+        // time 节点（Episode.date，同一天只建一个）
+        if !date.is_empty() {
+            let time_node_id = format!("time:{}", date);
+            if time_set.insert(date.clone()) {
+                nodes.push(models::GraphNode {
+                    id: time_node_id.clone(),
+                    label: date.clone(),
+                    r#type: "time".to_string(),
+                    color: "#0D9488".to_string(),
+                });
+            }
+            edges.push(models::GraphEdge {
+                source: ep_id.clone(),
+                target: time_node_id,
+                label: "发生在".to_string(),
             });
         }
     }
 
+    // 3. [[wikilink]] 引用边：document → document，label="引用"
+    // 遍历所有 wiki_pages 的 content，提取 [[标题]]，若目标标题存在则建边
+    for page in &wiki_pages {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for target_title in extract_wikilinks(&page.content) {
+            if !seen.insert(target_title.clone()) {
+                continue;
+            }
+            if let Some(target_id) = wiki_title_to_id.get(&target_title) {
+                // 避免自引用
+                if target_id != &page.id {
+                    edges.push(models::GraphEdge {
+                        source: page.id.clone(),
+                        target: target_id.clone(),
+                        label: "引用".to_string(),
+                    });
+                }
+            }
+        }
+    }
+
     Ok(models::GraphData { nodes, edges })
+}
+
+/// 手动解析 `[[wikilink]]` 双链标题（不依赖 regex crate）。
+/// 提取所有 `[[...]]` 中非空、去空白后的标题，保持出现顺序（含重复），
+/// 由调用方按需去重。
+fn extract_wikilinks(content: &str) -> Vec<String> {
+    let mut links = Vec::new();
+    let bytes = content.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'[' && bytes[i + 1] == b'[' {
+            let rest = &content[i + 2..];
+            if let Some(end) = rest.find("]]") {
+                let title = rest[..end].trim();
+                if !title.is_empty() {
+                    links.push(title.to_string());
+                }
+                i = i + 2 + end + 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    links
 }
 
 // ============================================================

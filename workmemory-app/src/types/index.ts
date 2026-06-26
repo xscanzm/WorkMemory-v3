@@ -49,6 +49,7 @@ export interface CleanEpisode {
   confidence: number;                 // 0.0 - 1.0
   wikiEligible: boolean;
   wikiStatus: 'none' | 'eligible' | 'saved';
+  isPrivate: boolean;
 }
 
 /** 蒸馏出的结构化记忆单元，Episode 的灵魂，用于向量化和双链图谱 (memory_cells 表) */
@@ -182,4 +183,10 @@ export interface MascotInfo {
   id: number;
   displayName: string;
   description: string;
+}
+
+/** 关系图谱数据聚合 (nodes + edges) */
+export interface GraphData {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
 }

@@ -108,3 +108,25 @@ body {
     opacity: 1;
   }
 }
+
+/* ===== 富文本渲染类 (ReportsView markdownToRichHtml) =====
+ * 替代内联 style 硬编码颜色，统一使用 CSS 变量。 */
+.rte-wikilink {
+  color: var(--color-primary);
+  font-weight: 700;
+}
+
+.rte-code {
+  background: var(--color-surface-subtle);
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 0.9em;
+}
+
+.rte-blockquote {
+  border-left: 3px solid var(--color-border);
+  margin: 8px 0;
+  padding: 4px 12px;
+  color: var(--color-text-light);
+}

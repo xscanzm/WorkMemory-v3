@@ -59,6 +59,7 @@ const MOCK_EPISODES: CleanEpisode[] = [
     confidence: 0.92,
     wikiEligible: true,
     wikiStatus: 'eligible',
+    isPrivate: false,
   },
   {
     id: 'ep-2026-06-26-002',
@@ -83,6 +84,7 @@ const MOCK_EPISODES: CleanEpisode[] = [
     confidence: 0.88,
     wikiEligible: false,
     wikiStatus: 'none',
+    isPrivate: false,
   },
   {
     id: 'ep-2026-06-26-003',
@@ -107,6 +109,7 @@ const MOCK_EPISODES: CleanEpisode[] = [
     confidence: 0.8,
     wikiEligible: false,
     wikiStatus: 'none',
+    isPrivate: false,
   },
 ];
 

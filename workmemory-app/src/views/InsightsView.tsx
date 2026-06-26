@@ -122,6 +122,23 @@ function formatDuration(seconds: number): string {
   return `${m}m`;
 }
 
+/**
+ * 解析 insight.metadata。
+ * 后端 (Rust) 用 Option<String> 存 JSON，序列化后到前端是字符串；
+ * Mock / 旧路径可能直接给对象。两种情况都兼容。
+ */
+function parseMeta(ins: Insight): Record<string, unknown> {
+  if (!ins.metadata) return {};
+  if (typeof ins.metadata === 'string') {
+    try {
+      return JSON.parse(ins.metadata) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  }
+  return ins.metadata as Record<string, unknown>;
+}
+
 const centerStyle: CSSProperties = {
   flex: 1,
   display: 'flex',
@@ -197,8 +214,14 @@ export default function InsightsView(): JSX.Element {
             if (ins.type === 'time_distribution') {
               return <TimeDistributionCard key={ins.id} insight={ins} />;
             }
+            if (ins.type === 'fragmented_switch') {
+              return <InsightCard key={ins.id} insight={ins} />;
+            }
             if (ins.type === 'open_todo') {
               return <OpenTodoCard key={ins.id} insight={ins} />;
+            }
+            if (ins.type === 'deep_focus') {
+              return <DeepFocusCard key={ins.id} insight={ins} />;
             }
             return <InsightCard key={ins.id} insight={ins} />;
           })}
@@ -210,8 +233,9 @@ export default function InsightsView(): JSX.Element {
 
 /** 时间分布横向条形图卡（纯 CSS） */
 function TimeDistributionCard({ insight }: { insight: Insight }): JSX.Element {
+  const meta = parseMeta(insight);
   const apps =
-    (insight.metadata?.apps as { app: string; seconds: number }[] | undefined) ?? [];
+    (meta.apps as { app: string; seconds: number }[] | undefined) ?? [];
   const maxSeconds = apps.reduce((mx, a) => Math.max(mx, a.seconds || 0), 0) || 1;
 
   return (
@@ -277,8 +301,9 @@ function TimeDistributionCard({ insight }: { insight: Insight }): JSX.Element {
 
 /** 未完成线索卡：列出 todos 非空的 episode 及其 todos */
 function OpenTodoCard({ insight }: { insight: Insight }): JSX.Element {
+  const meta = parseMeta(insight);
   const eps =
-    (insight.metadata?.episodes as { title: string; todos: string[] }[] | undefined) ?? [];
+    (meta.episodes as { title: string; todos: string[] }[] | undefined) ?? [];
 
   return (
     <CardShell insight={insight}>
@@ -306,6 +331,95 @@ function OpenTodoCard({ insight }: { insight: Insight }): JSX.Element {
         ))}
         {eps.length === 0 ? (
           <div style={{ fontSize: 12, color: 'var(--color-text-light)' }}>暂无未完成线索。</div>
+        ) : null}
+      </div>
+    </CardShell>
+  );
+}
+
+/** 深度专注卡：标题 + 描述 + metadata.sessions 列表（app + 时长 + 开始时间） */
+interface DeepFocusSession {
+  app: string;
+  seconds?: number;
+  durationSeconds?: number;
+  startTime?: string;
+  start?: string;
+}
+
+function DeepFocusCard({ insight }: { insight: Insight }): JSX.Element {
+  const meta = parseMeta(insight);
+  const sessions = (meta.sessions as DeepFocusSession[] | undefined) ?? [];
+  const totalSessions = typeof meta.count === 'number' ? meta.count : sessions.length;
+  const totalMinutes = typeof meta.minutes === 'number' ? meta.minutes : null;
+
+  return (
+    <CardShell insight={insight}>
+      <div style={{ fontSize: 13, color: 'var(--color-text-muted)', marginBottom: 'var(--space-md)' }}>
+        {insight.description}
+      </div>
+      {(totalMinutes !== null || totalSessions > 0) && (
+        <div
+          style={{
+            display: 'flex',
+            gap: 'var(--space-lg)',
+            marginBottom: 'var(--space-md)',
+            fontSize: 12,
+            color: 'var(--color-text-light)',
+          }}
+        >
+          {totalSessions > 0 && (
+            <span>专注次数：{totalSessions}</span>
+          )}
+          {totalMinutes !== null && <span>累计：{formatDuration(totalMinutes * 60)}</span>}
+        </div>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-sm)' }}>
+        {sessions.map((s, i) => {
+          const sec = s.seconds ?? s.durationSeconds ?? 0;
+          const start = s.startTime ?? s.start ?? '';
+          return (
+            <div
+              key={i}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 'var(--space-md)',
+                padding: '6px 8px',
+                borderRadius: 'var(--radius-sm)',
+                background: 'var(--color-surface-subtle)',
+              }}
+            >
+              <span
+                style={{
+                  flex: 1,
+                  fontSize: 13,
+                  color: 'var(--color-text-main)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {s.app}
+              </span>
+              {start && (
+                <span style={{ fontSize: 12, color: 'var(--color-text-light)' }}>{start}</span>
+              )}
+              <span
+                style={{
+                  fontSize: 12,
+                  color: 'var(--color-text-muted)',
+                  flexShrink: 0,
+                  minWidth: 48,
+                  textAlign: 'right',
+                }}
+              >
+                {formatDuration(sec)}
+              </span>
+            </div>
+          );
+        })}
+        {sessions.length === 0 ? (
+          <div style={{ fontSize: 12, color: 'var(--color-text-light)' }}>暂无深度专注记录。</div>
         ) : null}
       </div>
     </CardShell>

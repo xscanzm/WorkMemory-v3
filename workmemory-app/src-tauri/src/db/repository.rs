@@ -18,7 +18,7 @@ use crate::models::{
 
 const SEGMENT_COLS: &str = "id, date, start_time, end_time, duration_seconds, app_name, process_name, window_title, ocr_text, ocr_status, image_hash, screenshot_path, is_important, is_private, is_deleted, capture_source, browser_url, activity_type, created_at";
 
-const EPISODE_COLS: &str = "id, date, hour_bucket, start_time, end_time, title, summary, memory_kind, project, entities, topics, materials, outputs, todos, blockers, segment_ids, evidence_refs, source_quality, confidence, wiki_eligible, wiki_status, model_name, distill_version, created_at, updated_at";
+const EPISODE_COLS: &str = "id, date, hour_bucket, start_time, end_time, title, summary, memory_kind, project, entities, topics, materials, outputs, todos, blockers, segment_ids, evidence_refs, source_quality, confidence, wiki_eligible, wiki_status, is_private, model_name, distill_version, created_at, updated_at";
 
 const MEMORY_CELL_COLS: &str = "id, clean_episode_id, episode_text, facts, foresight, created_at";
 
@@ -102,6 +102,7 @@ impl CleanEpisode {
             confidence: row.get("confidence")?,
             wiki_eligible: row.get::<_, i32>("wiki_eligible")? != 0,
             wiki_status: row.get("wiki_status")?,
+            is_private: row.get::<_, i32>("is_private")? != 0,
             model_name: row.get("model_name")?,
             distill_version: row.get("distill_version")?,
             created_at: row.get("created_at")?,
@@ -230,6 +231,7 @@ pub fn get_segments_by_date(conn: &Connection, date: &str) -> rusqlite::Result<V
 
 /// 获取某天某小时（hour_bucket 形如 "14:00"）的未软删除片段。
 /// 通过比较 start_time 与 hour_bucket 的前两位小时数实现。
+/// 过滤 is_private=1，避免隐私窗口标题进入 AI prompt / 聚类标题。
 pub fn get_segments_by_hour(
     conn: &Connection,
     date: &str,
@@ -237,7 +239,7 @@ pub fn get_segments_by_hour(
 ) -> rusqlite::Result<Vec<WorkSegment>> {
     let sql = format!(
         "SELECT {SEGMENT_COLS} FROM segments \
-         WHERE date = ?1 AND substr(start_time, 1, 2) = substr(?2, 1, 2) AND is_deleted = 0 \
+         WHERE date = ?1 AND substr(start_time, 1, 2) = substr(?2, 1, 2) AND is_deleted = 0 AND is_private = 0 \
          ORDER BY start_time ASC"
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -300,16 +302,17 @@ pub fn soft_delete_segment(conn: &Connection, id: &str) -> rusqlite::Result<()> 
 /// 插入一条逻辑事件。触发器 trg_episodes_ai 自动同步 FTS5 索引。
 pub fn insert_episode(conn: &Connection, ep: &CleanEpisode) -> rusqlite::Result<()> {
     let wiki_eligible = i32::from(ep.wiki_eligible);
+    let is_private = i32::from(ep.is_private);
     conn.execute(
-        "INSERT INTO clean_episodes (id, date, hour_bucket, start_time, end_time, title, summary, memory_kind, project, entities, topics, materials, outputs, todos, blockers, segment_ids, evidence_refs, source_quality, confidence, wiki_eligible, wiki_status, model_name, distill_version, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+        "INSERT INTO clean_episodes (id, date, hour_bucket, start_time, end_time, title, summary, memory_kind, project, entities, topics, materials, outputs, todos, blockers, segment_ids, evidence_refs, source_quality, confidence, wiki_eligible, wiki_status, is_private, model_name, distill_version, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
         params![
             ep.id, ep.date, ep.hour_bucket, ep.start_time, ep.end_time,
             ep.title, ep.summary, ep.memory_kind, ep.project,
             to_json(&ep.entities)?, to_json(&ep.topics)?, to_json(&ep.materials)?,
             to_json(&ep.outputs)?, to_json(&ep.todos)?, to_json(&ep.blockers)?,
             to_json(&ep.segment_ids)?, to_json(&ep.evidence_refs)?,
-            ep.source_quality, ep.confidence, wiki_eligible, ep.wiki_status,
+            ep.source_quality, ep.confidence, wiki_eligible, ep.wiki_status, is_private,
             ep.model_name, ep.distill_version, ep.created_at, ep.updated_at
         ],
     )?;
@@ -724,19 +727,27 @@ pub fn update_settings(conn: &Connection, settings: &AppSetting) -> rusqlite::Re
 // FTS5 全文检索
 // ============================================================================
 
-/// segments 全文检索：返回 (rowid, snippet, rank)。
+/// segments 全文检索：返回 (rowid, snippet, highlight, rank)。
 /// snippet 取自 ocr_text 列（FTS 列索引 0），用 '==' 标记命中词。
+/// highlight 取整列原文并在命中处用 '==' 标记，适合作为 SearchResult.primary_text
+/// 以支持"高亮反查"用例。
 pub fn search_segments_fts(
     conn: &Connection,
     query: &str,
     limit: i64,
-) -> rusqlite::Result<Vec<(i64, String, f64)>> {
+) -> rusqlite::Result<Vec<(i64, String, String, f64)>> {
     let mut stmt = conn.prepare(
-        "SELECT rowid, snippet(fts_segments, 0, '==', '==', '...', 10) AS snippet, rank \
+        "SELECT rowid, snippet(fts_segments, 0, '==', '==', '...', 10) AS snippet, \
+         highlight(fts_segments, 0, '==', '==') AS highlight_text, rank \
          FROM fts_segments WHERE fts_segments MATCH ?1 ORDER BY rank LIMIT ?2",
     )?;
     let rows = stmt.query_map(params![query, limit], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, f64>(2)?))
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, f64>(3)?,
+        ))
     })?;
     rows.collect()
 }
@@ -779,7 +790,10 @@ pub fn search_wiki_fts(
 ///
 /// date_range 为 Some((start_date, end_date)) 时按 YYYY-MM-DD 字符串比较过滤
 /// segments 与 episodes；wiki 无日期列，始终纳入。
-/// 结果按 score（FTS5 rank）升序：rank 越小（越负）相关性越高，排在越前。
+///
+/// score 归一化：FTS5 rank 为负值（越小越相关），转为 `1.0 / (1.0 + (-rank))`
+/// 得到 0-1 之间正值，与向量 cosine similarity 量纲一致（越高越相关）。
+/// 结果按 score 降序排列（最相关在前）。
 pub fn search_memories(
     conn: &Connection,
     query: &str,
@@ -789,7 +803,7 @@ pub fn search_memories(
     let mut results: Vec<SearchResult> = Vec::new();
 
     // 1. segments
-    for (rowid, snippet, rank) in search_segments_fts(conn, query, limit)? {
+    for (rowid, snippet, highlight, rank) in search_segments_fts(conn, query, limit)? {
         let seg: Option<WorkSegment> = conn
             .query_row(
                 &format!("SELECT {SEGMENT_COLS} FROM segments WHERE rowid = ?1"),
@@ -803,18 +817,22 @@ pub fn search_memories(
                     continue;
                 }
             }
+            // primary_text 优先使用 highlight（含 == 命中标记），为空时回退到窗口标题/应用名
+            let primary_text = if !highlight.is_empty() {
+                highlight
+            } else if !seg.window_title.is_empty() {
+                seg.window_title.clone()
+            } else {
+                seg.app_name.clone()
+            };
             results.push(SearchResult {
                 source_id: seg.id.clone(),
                 source_type: "segment".to_string(),
                 date: seg.date.clone(),
                 time_range: format!("{} - {}", seg.start_time, seg.end_time),
-                primary_text: if seg.window_title.is_empty() {
-                    seg.app_name.clone()
-                } else {
-                    seg.window_title.clone()
-                },
+                primary_text,
                 snippet,
-                score: rank as f32,
+                score: normalize_fts_rank(rank),
                 match_reason: "OCR命中".to_string(),
             });
         }
@@ -846,7 +864,7 @@ pub fn search_memories(
                     ep.title.clone()
                 },
                 snippet,
-                score: rank as f32,
+                score: normalize_fts_rank(rank),
                 match_reason: "语义命中".to_string(),
             });
         }
@@ -869,17 +887,25 @@ pub fn search_memories(
                 time_range: String::new(),
                 primary_text: page.title.clone(),
                 snippet,
-                score: rank as f32,
+                score: normalize_fts_rank(rank),
                 match_reason: "Wiki关联".to_string(),
             });
         }
     }
 
-    // FTS5 rank：越小（越负）越相关 → 升序排列，最相关在前
+    // 归一化后 score 越大越相关 → 降序排列，最相关在前
     results.sort_by(|a, b| {
-        a.score
-            .partial_cmp(&b.score)
+        b.score
+            .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     Ok(results)
+}
+
+/// FTS5 rank 归一化：rank 为负值（BM25，越小越相关），转为
+/// `1.0 / (1.0 + (-rank))`，得到 0-1 之间正值（越高越相关），
+/// 与向量 cosine similarity 量纲一致。对非负 rank（异常值）按 0 处理。
+fn normalize_fts_rank(rank: f64) -> f32 {
+    let neg = if rank < 0.0 { -rank } else { 0.0 };
+    (1.0 / (1.0 + neg)) as f32
 }

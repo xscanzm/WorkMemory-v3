@@ -203,13 +203,23 @@ export default function ReportsView(): JSX.Element {
               ) : episodes.length === 0 ? (
                 <div
                   style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 'var(--space-md)',
                     padding: 'var(--space-xl)',
-                    fontSize: 13,
                     color: 'var(--color-text-light)',
                     textAlign: 'center',
                   }}
                 >
-                  今日暂无 Episode，无法生成报告。
+                  <FileText size={40} strokeWidth={1.5} />
+                  <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-muted)' }}>
+                    今日暂无 Episode
+                  </div>
+                  <div style={{ fontSize: 12, maxWidth: 320, textAlign: 'center', lineHeight: 1.6 }}>
+                    小记需要先记录一些工作片段才能生成报告。前往今日视图查看记录状态。
+                  </div>
                 </div>
               ) : (
                 episodes.map((ep) => {
@@ -546,15 +556,15 @@ function escapeHtml(s: string): string {
 
 function inlineFormat(text: string): string {
   let t = escapeHtml(text);
-  // [[wikilink]] → 蓝色加粗
+  // [[wikilink]] → 蓝色加粗（样式由 .rte-wikilink 提供）
   t = t.replace(
     /\[\[([^\]]+)\]\]/g,
-    '<strong style="color:#2563EB">$1</strong>',
+    '<strong class="rte-wikilink">$1</strong>',
   );
-  // `code` → 行内代码
+  // `code` → 行内代码（样式由 .rte-code 提供）
   t = t.replace(
     /`([^`]+)`/g,
-    '<code style="background:#f0f0f0;padding:2px 4px;border-radius:3px;font-family:ui-monospace,monospace;font-size:13px">$1</code>',
+    '<code class="rte-code">$1</code>',
   );
   // **bold** → 加粗
   t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
@@ -624,9 +634,7 @@ function markdownToRichHtml(md: string): string {
     if (/^>\s?/.test(raw)) {
       closeList();
       if (!inQuote) {
-        out.push(
-          '<blockquote style="border-left:3px solid #ccc;padding-left:10px;color:#666;margin:6px 0">',
-        );
+        out.push('<blockquote class="rte-blockquote">');
         inQuote = true;
       }
       out.push(`<div>${inlineFormat(raw.replace(/^>\s?/, ''))}</div>`);

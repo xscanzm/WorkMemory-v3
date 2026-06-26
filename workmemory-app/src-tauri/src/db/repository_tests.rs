@@ -66,6 +66,7 @@ fn sample_episode(id: &str, summary: &str) -> CleanEpisode {
         confidence: 0.9,
         wiki_eligible: true,
         wiki_status: "eligible".to_string(),
+        is_private: false,
         model_name: "gpt-4o-mini".to_string(),
         distill_version: "v1".to_string(),
         created_at: "2026-06-26T11:00:00Z".to_string(),
@@ -132,7 +133,7 @@ fn fts_segments_syncs_on_insert() {
 
     let hits = search_segments_fts(&conn, "测试", 10).unwrap();
     assert!(!hits.is_empty(), "FTS5 触发器应在 INSERT 后同步并命中 测试");
-    let (_, snippet, _rank) = &hits[0];
+    let (_, snippet, _highlight, _rank) = &hits[0];
     assert!(
         snippet.contains("测试"),
         "snippet 应包含命中词，实际: {snippet}"

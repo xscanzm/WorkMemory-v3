@@ -241,6 +241,22 @@ pub async fn run_distill_for_hour(
                 hour_bucket,
                 pairs.len()
             );
+            // ---- 异步向量化 MemoryCell（死代码修复）----
+            // 必须在 DB 锁释放后 spawn：embed_memory_cell 内部会再次获取同一连接锁，
+            // 在此持有锁时 await 会导致死锁。settings 已在上方读取，pairs 在作用域内。
+            if settings.embedding_enabled {
+                let app_clone = app.clone();
+                let cells_clone = pairs
+                    .iter()
+                    .map(|(_, mc)| mc.clone())
+                    .collect::<Vec<_>>();
+                tauri::async_runtime::spawn(async move {
+                    for mc in cells_clone {
+                        // embed_memory_cell 内部已对失败做 log::warn 静默处理，返回 ()
+                        crate::core::embedding::embed_memory_cell(&app_clone, &mc).await;
+                    }
+                });
+            }
             Ok(())
         }
         Some(Err(e)) => {
@@ -530,6 +546,7 @@ fn raw_to_episode_and_cell(
         confidence: raw.confidence,
         wiki_eligible: raw.wiki_eligible,
         wiki_status,
+        is_private: false,
         model_name: model_name.to_string(),
         distill_version: "1".to_string(),
         created_at: now.clone(),
@@ -696,6 +713,7 @@ fn build_local_episode(
         confidence: 0.6,
         wiki_eligible: false,
         wiki_status: "none".to_string(),
+        is_private: false,
         model_name: "local-cluster".to_string(),
         distill_version: "1".to_string(),
         created_at: now.to_string(),
@@ -942,6 +960,7 @@ pub fn compute_insights(app: &tauri::AppHandle, date: &str) -> Result<Vec<Insigh
             severity: "info".to_string(),
             title: "今日时间分布".to_string(),
             description: format!("时间占用 Top3: {}", top.join(", ")),
+            metadata: None,
             created_at: now.clone(),
         });
     }
@@ -954,6 +973,7 @@ pub fn compute_insights(app: &tauri::AppHandle, date: &str) -> Result<Vec<Insigh
             severity: "warning".to_string(),
             title: "注意力碎片化".to_string(),
             description: "10 分钟内窗口切换超过 30 次，建议合并临时沟通片段。".to_string(),
+            metadata: None,
             created_at: now.clone(),
         });
     }
@@ -967,6 +987,7 @@ pub fn compute_insights(app: &tauri::AppHandle, date: &str) -> Result<Vec<Insigh
                 severity: "info".to_string(),
                 title: format!("待跟进: {}", ep.title),
                 description: ep.todos.join("; "),
+                metadata: None,
                 created_at: now.clone(),
             });
         }
@@ -982,6 +1003,7 @@ pub fn compute_insights(app: &tauri::AppHandle, date: &str) -> Result<Vec<Insigh
                 severity: "info".to_string(),
                 title: format!("深度专注: {}", ep.title),
                 description: format!("持续专注 {} 分钟。", dur / 60),
+                metadata: None,
                 created_at: now.clone(),
             });
         }
@@ -1047,7 +1069,7 @@ pub fn build_distill_prompt(date: &str, hour_bucket: &str, ocr_records: &str) ->
 请对上述碎片信息进行"智能降噪"、"去重"与"语义聚合"，将其聚合成 1-3 个有实际工作价值的 Episode（逻辑事件）。
 
 【严格约束（核心红线）】
-1. 必须完全过滤掉社交聊天摸鱼、系统弹窗、无意义的空白窗口和纯噪音。
+1. 必须完全过滤掉非工作社交聊天、系统弹窗、无意义的空白窗口和纯噪音。
 2. 每一个 Episode 必须有理有据，其 evidence_refs 必须关联到产生该事件的物理 segment_id。
 3. 必须输出严格 of JSON 格式，不包含任何 Markdown 代码块包裹（如 ```json），第一个字符必须是 {{，最后一个字符必须是 }}。
 

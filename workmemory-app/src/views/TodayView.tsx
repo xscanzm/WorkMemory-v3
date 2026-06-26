@@ -167,6 +167,7 @@ export default function TodayView(): JSX.Element {
                     key={ep.id}
                     episode={ep}
                     appName={ep.project}
+                    isPrivate={ep.isPrivate}
                     isActive={ep.id === activeEpisodeId}
                     onToggleImportant={(id) => {
                       // P0：仅本地反馈，持久化由后端集成后接入
@@ -559,4 +560,5 @@ const PLACEHOLDER_EPISODE: CleanEpisode = {
   confidence: 0,
   wikiEligible: false,
   wikiStatus: 'none',
+  isPrivate: false,
 };

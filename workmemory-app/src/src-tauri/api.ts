@@ -10,6 +10,7 @@ import type {
   AppSetting,
   CalendarDay,
   CleanEpisode,
+  GraphData,
   Insight,
   MascotInfo,
   RecorderState,
@@ -194,6 +195,10 @@ export async function getInsights(date: string): Promise<Insight[]> {
   return invoke<Insight[]>('get_insights', { date });
 }
 
+export async function getGraphData(): Promise<GraphData> {
+  return invoke<GraphData>('get_graph_data');
+}
+
 /**
  * 统一对外暴露的 api 对象。
  */
@@ -219,4 +224,5 @@ export const api = {
   listMascots,
   getCalendarMonth,
   getInsights,
+  getGraphData,
 };

@@ -56,6 +56,10 @@ pub struct CleanEpisode {
     pub confidence: f64,
     pub wiki_eligible: bool,
     pub wiki_status: String,
+    /// 是否为隐私段聚合而成（隐私窗口标题需在蒸馏时聚合为一条带标记的 episode，
+    /// 前端 TodayView 据此渲染紫色斜条 + 🔒）。
+    #[serde(default)]
+    pub is_private: bool,
     pub model_name: String,
     pub distill_version: String,
     pub created_at: String,
@@ -234,6 +238,10 @@ pub struct Insight {
     pub title: String,
     pub description: String,
     pub severity: String,
+    /// JSON 字符串，前端解析后用于时间分布图/未完成线索等卡片的详细数据
+    /// （前端 types/index.ts 已有 `metadata?: Record<string, unknown>`）。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub metadata: Option<String>,
     pub created_at: String,
 }
 

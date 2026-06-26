@@ -124,8 +124,6 @@ const WV_CSS = `
   display:flex; align-items:center; gap: var(--space-2xs);
 }
 .wv-backlink:hover { text-decoration: underline; }
-.wv-skel { background: var(--color-surface-subtle); border-radius: var(--radius-sm); animation: wv-pulse 1.2s ease-in-out infinite; }
-@keyframes wv-pulse { 0%,100% { opacity:1; } 50% { opacity:0.5; } }
 `;
 
 function newId(): string {
@@ -386,10 +384,10 @@ export default function WikiView(): JSX.Element {
               gap: 'var(--space-md)',
             }}
           >
-            <div className="wv-skel" style={{ height: 22, width: 220 }} />
-            <div className="wv-skel" style={{ height: 14, width: '100%' }} />
-            <div className="wv-skel" style={{ height: 14, width: '82%' }} />
-            <div className="wv-skel" style={{ height: 14, width: '64%' }} />
+            <div className="skeleton" style={{ height: 22, width: 220, borderRadius: 'var(--radius-sm)' }} />
+            <div className="skeleton" style={{ height: 14, width: '100%', borderRadius: 'var(--radius-sm)' }} />
+            <div className="skeleton" style={{ height: 14, width: '82%', borderRadius: 'var(--radius-sm)' }} />
+            <div className="skeleton" style={{ height: 14, width: '64%', borderRadius: 'var(--radius-sm)' }} />
             <div
               style={{
                 marginTop: 'var(--space-sm)',

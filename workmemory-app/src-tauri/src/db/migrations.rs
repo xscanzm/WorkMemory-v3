@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS clean_episodes (
   confidence       REAL NOT NULL DEFAULT 0.0,
   wiki_eligible    INTEGER NOT NULL DEFAULT 0,
   wiki_status      TEXT NOT NULL DEFAULT 'none',
+  is_private       INTEGER NOT NULL DEFAULT 0,
   model_name       TEXT NOT NULL DEFAULT '',
   distill_version  TEXT NOT NULL DEFAULT '',
   created_at       TEXT NOT NULL DEFAULT '',

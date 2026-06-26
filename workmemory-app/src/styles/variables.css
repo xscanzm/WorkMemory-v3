@@ -1,0 +1,58 @@
+/**
+ * WorkMemory 设计 Token 系统 (Design Tokens)
+ * 严格遵循 04_UI_SPEC.md §1 全局设计 Token 定义。
+ * 视觉基调：毛玻璃质感 (Aero/Acrylic) + Linear 极简科技风格融合。
+ * 所有颜色、间距、圆角、阴影必须以 CSS 变量引用，禁止在此文件之外 Hardcode 颜色。
+ */
+:root {
+  /* 1. 基础色板 (Neutral Palette) - 偏冷、安静色调 */
+  --color-bg-base: #F4F6F9;            /* 全局底层背景 */
+  --color-surface: #FFFFFF;            /* 顶层干净卡片 */
+  --color-surface-subtle: #F9FAFB;     /* 浅灰色浅卡片 */
+  --color-surface-glass: rgba(255, 255, 255, 0.75); /* 毛玻璃卡片 */
+  --color-surface-glass-strong: rgba(255, 255, 255, 0.85); /* 强毛玻璃卡片 */
+  --color-border: #E5E9F0;             /* 精细单色边框 */
+  --color-border-hover: #D1D8E3;
+  --color-text-main: #1E2330;          /* 正文字 */
+  --color-text-muted: #6B7280;         /* 辅助置灰字 */
+  --color-text-light: #9CA3AF;         /* 占位符/超轻字 */
+
+  /* 2. 语义强调色 (Accent Palette) */
+  --color-primary: #2563EB;            /* 经典深邃蓝 */
+  --color-primary-soft: #EFF6FF;
+  --color-success: #10B981;            /* 温暖松针绿 */
+  --color-success-soft: #ECFDF5;
+  --color-warning: #F59E0B;            /* 暖心琥珀黄 */
+  --color-danger: #EF4444;             /* 克制警告红 */
+  --color-private: #8B5CF6;            /* 隐私守护紫 */
+  --color-private-soft: #F5F3FF;
+  --color-memory: #0D9488;             /* 沉淀历史青 */
+
+  /* 3. 精细圆角 (Border Radius) */
+  --radius-sm: 4px;
+  --radius-md: 8px;                    /* 标准卡片圆角 */
+  --radius-lg: 12px;                   /* 弹窗/顶部组件大圆角 */
+  --radius-round: 9999px;
+
+  /* 4. 严谨间距 (Spacing Scale) */
+  --space-2xs: 2px;
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+  --space-2xl: 32px;
+
+  /* 5. 优雅阴影与材质 (Shadows & Filter) */
+  --shadow-subtle: 0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.02);
+  --shadow-card: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.02);
+  --shadow-overlay: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  --blur-acrylic: blur(20px);
+
+  /* 6. 字体与过渡 (Typography & Motion) */
+  --font-sans: "PingFang SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 150ms;
+  --duration-base: 200ms;
+  --duration-slow: 250ms;
+}

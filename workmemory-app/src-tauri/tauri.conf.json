@@ -1,0 +1,86 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "WorkMemory",
+  "version": "3.0.0",
+  "identifier": "com.workmemory.app",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "macOSPrivateApi": false,
+    "security": {
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$RESOURCE/pet/**"]
+      },
+      "csp": null
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "WorkMemory 今日记忆",
+        "width": 1280,
+        "height": 720,
+        "minWidth": 1080,
+        "minHeight": 640,
+        "decorations": false,
+        "resizable": true,
+        "transparent": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "center": true,
+        "url": "index.html"
+      },
+      {
+        "label": "mascot",
+        "title": "WorkMemory Mascot",
+        "width": 192,
+        "height": 208,
+        "decorations": false,
+        "resizable": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "focus": false,
+        "visible": false,
+        "shadow": false,
+        "x": 1700,
+        "y": 800,
+        "url": "index.html#/mascot"
+      }
+    ],
+    "trayIcon": {
+      "id": "main-tray",
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": false,
+      "menuOnLeftClick": false,
+      "tooltip": "WorkMemory 今日记忆"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [
+      "resources/pet/*"
+    ],
+    "category": "Productivity",
+    "shortDescription": "本地优先的个人工作记忆伙伴",
+    "longDescription": "WorkMemory 在后台安静低打扰地整理你每天的屏幕碎片，沉淀为可复看、可检索、可串联、可沉淀的个人知识系统。"
+  },
+  "plugins": {
+    "global-shortcut": {
+      "shortcuts": ["Ctrl+Shift+C"]
+    }
+  }
+}

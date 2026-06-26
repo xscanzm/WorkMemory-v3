@@ -1,0 +1,53 @@
+[package]
+name = "workmemory-app"
+version = "3.0.0"
+description = "WorkMemory 今日记忆 - 本地优先、常驻桌面的个人工作记忆伙伴"
+authors = ["WorkMemory Team"]
+edition = "2021"
+rust-version = "1.77"
+
+# 严格遵循 01_ARCHITECTURAL_DECISIONS.md §3.1 的依赖锁定
+[lib]
+name = "workmemory_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.0", features = ["tray-icon", "image-png"] }
+tauri-plugin-shell = "2.0"
+tauri-plugin-global-shortcut = "2.0"
+tokio = { version = "1.35", features = ["full"] }
+rusqlite = { version = "0.31", features = ["bundled", "modern_sqlite"] }
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+image = { version = "0.24", features = ["webp", "png", "jpeg"] }
+uuid = { version = "1.6", features = ["v4", "serde"] }
+reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"], default-features = false }
+base64 = "0.22"
+log = "0.4"
+env_logger = "0.11"
+
+# Windows 专属依赖：WinRT OCR 与窗口控制
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Threading",
+    "Win32_System_SystemInformation",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Imaging",
+    "Media_Ocr",
+    "Media_TextRecognition",
+    "Graphics_Imaging",
+    "Foundation",
+    "Globalization",
+] }
+
+[features]
+# 默认启用自定义协议
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

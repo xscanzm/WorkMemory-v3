@@ -1,0 +1,110 @@
+/**
+ * WorkMemory 全局基础样式 (Reset & Utility Classes)
+ * 严格遵循 03_CORE_ARCHITECTURE.md §1 工程目录与 04_UI_SPEC.md §1 设计 Token。
+ * 仅使用 CSS 变量与原生 CSS，不引入 Tailwind / CSS-in-JS。
+ */
+@import './variables.css';
+
+/* ===== 全局 Reset ===== */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+html,
+body {
+  background-color: var(--color-bg-base);
+  font-family: var(--font-sans);
+  line-height: 1.6;
+  color: var(--color-text-main);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* 禁止文字溢出产生横向滚动条 */
+  overflow-x: hidden;
+}
+
+/* ===== 自定义 Titlebar 拖拽区域 ===== */
+.titlebar-drag-region {
+  -webkit-app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* ===== 滚动条样式 (细 / 半透明 / 透明轨道 fallback) ===== */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ===== 毛玻璃通用类 ===== */
+.glass-panel {
+  background: var(--color-surface-glass);
+  backdrop-filter: var(--blur-acrylic);
+  -webkit-backdrop-filter: var(--blur-acrylic);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+/* ===== 骨架屏动画 ===== */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-surface-subtle) 25%,
+    var(--color-border) 37%,
+    var(--color-surface-subtle) 63%
+  );
+  background-size: 400% 100%;
+  animation: skeleton-wave 1.4s ease infinite;
+}
+
+@keyframes skeleton-wave {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0 50%;
+  }
+}
+
+/* ===== 隐私保护紫色斜条 ===== */
+.privacy-stripes {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--color-private-soft),
+    var(--color-private-soft) 8px,
+    transparent 8px,
+    transparent 16px
+  );
+}
+
+/* ===== 通用淡入动画 ===== */
+.fade-in {
+  animation: fadeIn var(--duration-base) var(--ease-out-expo);
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

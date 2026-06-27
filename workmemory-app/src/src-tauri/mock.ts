@@ -253,6 +253,18 @@ const MOCK_MASCOT_LIST: MascotInfo[] = [
   { id: 9, displayName: 'Star', description: 'A twinkling star friend.' },
 ];
 
+/** Mock 成就列表（Task 23.1） */
+const MOCK_ACHIEVEMENTS = [
+  { code: 'first_task', title: '初出茅庐', description: '完成第一个任务', icon: '🌱', unlocked: true, unlockedAt: '2026-06-26T10:00:00+08:00', progress: 1 },
+  { code: 'streak_7', title: '一周坚持', description: '连续 7 天完成任务', icon: '🔥', unlocked: false, unlockedAt: null, progress: 0.43 },
+  { code: 'pet_level_5', title: '宠物达人', description: '宠物升至 5 级', icon: '🐾', unlocked: false, unlockedAt: null, progress: 0.2 },
+  { code: 'focus_10', title: '专注新手', description: '完成 10 次专注会话', icon: '🎯', unlocked: false, unlockedAt: null, progress: 0.3 },
+  { code: 'tasks_50', title: '效率专家', description: '累计完成 50 个任务', icon: '⚡', unlocked: false, unlockedAt: null, progress: 0.12 },
+  { code: 'night_owl', title: '夜猫子', description: '在 23:00-04:00 完成任务或专注', icon: '🦉', unlocked: false, unlockedAt: null, progress: 0 },
+  { code: 'early_bird', title: '早起鸟', description: '在 05:00-08:00 完成任务或专注', icon: '🐦', unlocked: false, unlockedAt: null, progress: 0 },
+  { code: 'all_rounded', title: '全面发展', description: '解锁以上全部成就', icon: '🏆', unlocked: false, unlockedAt: null, progress: 0.14 },
+];
+
 /**
  * 模拟 invoke：根据命令名返回对应的 mock 数据。
  * 所有命令返回 Promise，模拟 IPC 异步行为。
@@ -457,6 +469,63 @@ export const invokeMock = async (command: string, args?: any): Promise<any> => {
     case 'trigger_manual_capture':
       // Ghost Capture：返回 OCR 纯文本（与后端 Result<String, String> 对齐）
       return '识别到一段文字内容（mock）';
+
+    // ===== Task 24: 数据导入/导出 + 用户偏好 + 音景 =====
+    case 'export_data_json': {
+      const bundle = {
+        schema_version: 1,
+        exported_at: new Date().toISOString(),
+        tables: {
+          tasks: [],
+          pet_state: [],
+          daily_stats: [],
+          focus_sessions: [],
+          achievements: [],
+          soundscape_packs: [],
+          pet_interaction_logs: [],
+          user_preferences: [],
+        },
+      };
+      return JSON.stringify(bundle, null, 2);
+    }
+
+    case 'export_tasks_csv':
+      return 'id,title,description,status,priority,due_date,mood_tag,recurrence_rule,is_pinned,sort_order,subtasks,category,tags,created_at,updated_at\n';
+
+    case 'import_data_json':
+      // 接收 { jsonStr }，mock 返回空摘要
+      return { imported: {}, total: 0 };
+
+    case 'clear_all_data':
+      return null;
+
+    case 'get_preference':
+      // 接收 { key }，mock 从 localStorage 读取（与前端 set_preference 路径一致）
+      return typeof localStorage !== 'undefined'
+        ? localStorage.getItem(`workmemory.pref.${args?.key}`)
+        : null;
+
+    case 'set_preference': {
+      // 接收 { key, value }，mock 写入 localStorage（与前端 get_preference 路径一致）
+      if (typeof localStorage !== 'undefined' && args?.key) {
+        localStorage.setItem(`workmemory.pref.${args?.key}`, String(args?.value));
+      }
+      return null;
+    }
+
+    case 'get_all_soundscape_packs':
+      return [];
+
+    case 'toggle_soundscape_pack':
+      // 接收 { id, enabled }，mock 直接成功
+      return null;
+
+    case 'get_all_achievements':
+    case 'recalculate_achievements':
+      return MOCK_ACHIEVEMENTS;
+
+    case 'unlock_achievement':
+      return MOCK_ACHIEVEMENTS.find((a) => a.code === args?.code) ?? MOCK_ACHIEVEMENTS[0];
 
     default:
       // 未知命令返回 null，避免阻塞 UI

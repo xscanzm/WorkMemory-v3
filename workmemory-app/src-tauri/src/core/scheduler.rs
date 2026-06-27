@@ -4,6 +4,13 @@
 //! - 每小时触发宠物属性衰减（hunger -5%/hr, energy -3%/hr）
 //! - 每日 23:00 触发每日摘要生成（占位，实际摘要由 distill 模块负责）
 //! - 不阻塞主线程（tokio spawn）
+//!
+//! TODO(Task 14/15): 当前 scheduler 尚未订阅 EventBus 事件。
+//!   需在 start_scheduler 中订阅 AppEvent::TaskCompleted / FocusCompleted，
+//!   调用 analytics_engine::on_task_completed / on_focus_completed 更新 daily_stats。
+//!   目前 focus_engine 直接调用 pet_engine::on_focus_completed（宠物侧），
+//!   但 analytics_engine 侧未接入，daily_stats 的 tasks_completed/total_focus_time
+//!   仅在显式调用对应 Tauri 命令时才会更新。
 
 use std::time::Duration;
 use tauri::Manager;

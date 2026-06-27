@@ -361,3 +361,58 @@ export function recorderStateToMascotState(rs: RecorderState): MascotStateName {
 *   **禁止** AI Coding Agent 在实现过程中临时手写一套新的动画逻辑或替换为 GIF/APNG。所有动画必须通过 `MascotSprite` 组件 and `STATE_ROWS` 配置表统一驱动。
 *   Spritesheet 图片不需要 CDN，全部本地读取，走 Tauri `asset://` 协议。
 *   如未来新增伙伴，只需在 `pet/` 目录下新建子目录并放置遵循相同规格的 `spritesheet.webp`，无需修改渲染组件。
+
+---
+
+## v3 UI 补全 (2026-06)
+
+> 本节补全 WorkMemory-v3 的「5-Tab 混合导航」与 13 个新增组件规格。所有组件文件位于 `/workspace/workmemory-app/src/components/`，路由入口位于 `/workspace/workmemory-app/src/views/`。下方 Props 与行为均对应当前实现源码，未实现的组件（AchievementCard / OnboardingWizard）标注「待 Task 23」。
+
+### 1. 5-Tab 混合 Sidebar 导航
+
+实现：`/workspace/workmemory-app/src/components/Sidebar.tsx`（72px 宽图标栏 + Radix Tooltip）。沿用第 2 节三栏布局的左侧栏，但**主导航重构为 5-Tab**，记忆功能下沉为子导航：
+
+| 分组 | 导航项 | 路由 | 图标 (lucide-react) |
+|---|---|---|---|
+| **PRIMARY_NAV**（4 项，v3 主入口） | 仪表盘 | `/home` | `Home` |
+| | 任务 | `/tasks` | `CheckSquare` |
+| | 专注 | `/focus` | `Timer` |
+| | 宠物 | `/pet` | `Cat` |
+| **MEMORY_NAV**（7 项，保留工作记忆捕获） | 今日 / 日历 / 搜索 / 洞察 / Wiki / 图谱 / 报告 | `/today` `/calendar` `/search` `/insights` `/wiki` `/graph` `/reports` | `Calendar` `CalendarDays` `Search` `Lightbulb` `BookOpen` `Share2` `FileText` |
+| **SETTINGS_NAV**（1 项，底部独立） | 设置 | `/settings` | `Settings` |
+
+*   **激活态**：左侧 2px 主色竖条（`left:-12px`）+ `--color-primary-soft` 背景；hover 叠加 `--color-surface-subtle`。
+*   **a11y**：`<nav aria-label="主导航">`，纯图标按钮均经 Tooltip 提供文本；触摸目标 48×48px ≥ 44px。
+*   **滚动**：主导航 + 记忆子导航共用一个 `overflowY:auto` 中间区，高度不足时滚动；Logo 与设置固定首尾。
+
+### 2. 新增组件清单（13 项）
+
+| 组件 | 文件 | Props | 行为 |
+|---|---|---|---|
+| **FAB** | `components/FAB.tsx` | `{ onClick: () => void }` | 固定右下角悬浮按钮，`aria-label="新建任务"`，点击打开 TaskForm。 |
+| **TaskForm** | `components/TaskForm.tsx` | `{ open: boolean; task: Task \| null; onClose: () => void }` | Portal 模态。`task=null` 新建（调 `saveTask`）/ 否则编辑（调 `updateTask`）。字段：标题、描述、状态、优先级、到期日、心情标签、分类、标签（逗号分隔）、置顶。校验标题非空；Escape / 遮罩关闭。 |
+| **TaskCard** | `components/TaskCard.tsx` | `{ task: Task; onEdit: (task: Task) => void }` | 状态徽章按 `STATUS_ORDER` 单向流转（inbox→todo→in_progress→completed→archived）；`archived` 终态隐藏操作。删除走 ConfirmDialog；编辑透传 `onEdit`。 |
+| **Toast** | `components/Toast.tsx` | 默认导出 `ToastContainer`（无 props，读 `toastStore`） | Portal 到 `body`；毛玻璃 + 左侧 4px 语义色边框；类型 `success/error/info`；3 秒自动消失 + `×` 手动关闭。 |
+| **ErrorBoundary** | `components/ErrorBoundary.tsx` | `{ children: ReactNode }` | React `class Component<Props, State>`；捕获渲染期异常，降级 UI + 重试按钮；包裹 `MainLayout`。 |
+| **ConfirmDialog** | `components/ConfirmDialog.tsx` | `{ open; title; message; confirmText?; cancelText?; danger?; onConfirm; onCancel }` | Portal 模态。`danger=true` 确认按钮变红（破坏性操作）；Escape / 遮罩触发 `onCancel`。 |
+| **StreakCalendar** | `components/StreakCalendar.tsx` | 无 props（内部拉取 `get_weekly_stats`） | 最近 7 天 `daily_stats` 热力图；加载失败展示空态。 |
+| **MoodBadge** | `components/MoodBadge.tsx` | `{ mood: string }` | 7 种情绪（ecstatic/happy/content/neutral/sad/angry/sleeping）→ emoji + 文案 + 配色徽章，未知 mood 回退 `neutral`。 |
+| **AIInsightCard** | `components/AIInsightCard.tsx` | `{ stats: DailyStats \| null; streak: number; productivityScore: number }` | 综合 tasks_completed / total_focus_time / streak / productivityScore 渲染见解卡片。 |
+| **SoundscapeMixer** | `components/SoundscapeMixer.tsx` | 无 props（内部拉取 `get_all_soundscape_packs`） | HTML5 Audio API per-pack play/pause/volume；`useRef<Map>` 持有 Audio 元素避免重建；空态 / 加载失败处理。 |
+| **PetSpriteDisplay** | `components/PetSpriteDisplay.tsx` | `{ mood: string; scale?: number }` | 包装 `MascotSprite`，将 pet mood → `MascotStateName`（ecstatic→jump、happy/content→idle、neutral→sit、sad/angry→fall、sleeping→sleep）；精灵图加载失败降级 emoji。 |
+| **AchievementCard** | *待 Task 23 实现* | （规划：`{ achievement: Achievement }`） | 成就解锁卡片，展示 icon/title/description/unlocked_at；规划于 `achievements` 表驱动。 |
+| **OnboardingWizard** | *待 Task 23 实现* | （规划：`{ onComplete: () => void }`） | 首次启动向导，写 `settings.onboardingCompleted=true`；规划多步骤引导。 |
+
+### 3. 配套视图
+
+5-Tab 主入口对应 5 个新视图，均位于 `/workspace/workmemory-app/src/views/`：
+
+*   `HomeView.tsx`：时间感知问候 + 宠物缩略 + 今日统计条（tasks_completed/total_focus_time/streak_count）+ 置顶任务 + 最近任务 top5。
+*   `TasksView.tsx`：任务列表 + 状态过滤 + 排序 + FAB 触发 TaskForm。
+*   `FocusView.tsx`：番茄钟（25+5）/自由计时切换 + `FocusTimerRing` 圆形 SVG 倒计时 + 中断原因输入 + 关联任务选择 + 可折叠音景 section（集成 SoundscapeMixer）。
+*   `PetView.tsx`：PetSpriteDisplay 展示 + 喂食/玩耍/休息/清洁交互按钮 + 属性面板进度条（hunger/energy/happiness/cleanliness/bond_level）。
+*   `SettingsView.tsx`：主题 / 语言（zh-CN/en-US）/ 音景 / 通知 / 数据管理分区（数据导入导出见 Task 24）。
+
+### 4. 设计 Token 衔接
+
+所有新组件强制复用 `variables.css` 既有 token，禁止 Hardcode 颜色：卡片 `--radius-md`、Modal `--radius-lg`、毛玻璃 `.glass` / `--color-surface-glass` + `--blur-acrylic`、弹簧动画 `--ease-spring` + `--duration-spring`、语义色 `--color-success / --color-danger / --color-primary`（Toast 边框、ConfirmDialog danger 按钮）。详细 token 治理见 `06_DESIGN_GOVERNANCE.md` §v3。

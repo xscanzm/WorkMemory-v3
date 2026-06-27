@@ -30,6 +30,15 @@ body {
   overflow-x: hidden;
 }
 
+/* ===== 等宽字体应用 (优化 9 / Task 20) =====
+ * 优先使用 JetBrains Mono（系统已安装时），回退到 SF Mono / Cascadia / Consolas。
+ * 不引入远程 @font-face：CSP style-src/font-src 仅允许 'self'，且遵循离线优先。 */
+code,
+pre,
+.mono {
+  font-family: var(--font-mono);
+}
+
 /* ===== 自定义 Titlebar 拖拽区域 ===== */
 .titlebar-drag-region {
   -webkit-app-region: drag;
@@ -61,6 +70,16 @@ body {
   -webkit-backdrop-filter: var(--blur-acrylic);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
+}
+
+/* ===== 极简毛玻璃工具类 (优化 9 / Task 20) =====
+ * 与 .glass-panel 共用 token，但不带圆角，便于自定义形状的容器复用。
+ * backdrop-filter 变量 --blur-acrylic 已存在于 variables.css。 */
+.glass {
+  background: var(--color-surface-glass);
+  backdrop-filter: var(--blur-acrylic);
+  -webkit-backdrop-filter: var(--blur-acrylic);
+  border: 1px solid var(--color-border);
 }
 
 /* ===== 骨架屏动画 ===== */
@@ -145,7 +164,10 @@ body {
 
 /* ===== 字体说明 ===== */
 /* Inter 与 JetBrains Mono 优先使用系统已安装版本，未安装时回退到 PingFang SC / SF Mono。
-   如需打包字体，将 woff2 放入 public/fonts/ 并取消下方 @font-face 注释。 */
+   如需打包字体，将 woff2 放入 public/fonts/ 并取消下方 @font-face 注释。
+   注意：不使用 Google Fonts @import —— tauri.conf.json 的 CSP 限制
+   style-src 'self' 'unsafe-inline'、font-src 'self' data:，禁止 fonts.googleapis.com /
+   fonts.gstatic.com；且遵循离线优先原则，保证无网环境下中文仍可正常渲染。 */
 
 /* ===== 毛玻璃变体 ===== */
 .glass-panel-strong {
@@ -209,6 +231,42 @@ body {
   animation: bounce-in var(--duration-bounce) var(--ease-spring) both;
 }
 
+/* ===== Spring-based 动画工具类 (优化 9 / Task 20) =====
+ * 复用已存在的 @keyframes spring-in（避免重定义同名关键帧破坏 .spring-in），
+ * 仅切换为 --duration-normal + --ease-spring，提供更轻量的弹性入场选项。
+ * slide-up / fade-in 为新增关键帧，名称与既有 toast-in / fadeIn 不冲突。 */
+.animate-spring-in {
+  animation: spring-in var(--duration-normal) var(--ease-spring) both;
+}
+
+@keyframes slide-up {
+  0% {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-slide-up {
+  animation: slide-up var(--duration-normal) var(--ease-out-expo);
+}
+
+@keyframes fade-in {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in var(--duration-fast) var(--ease-out-expo);
+}
+
 /* ===== 渐变进度条 ===== */
 .gradient-bar-primary {
   background: linear-gradient(90deg, var(--color-primary) 0%, var(--color-accent) 100%);
@@ -220,4 +278,33 @@ body {
 
 .gradient-bar-warning {
   background: linear-gradient(90deg, var(--color-warning) 0%, var(--color-danger) 100%);
+}
+
+/* ===== 无障碍：键盘焦点可见样式 ===== */
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* 鼠标点击不显示 outline（仅键盘 Tab 导航时显示） */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* 确保 outline 不被裁剪的元素仍可见（如圆角按钮） */
+:focus-visible:not(input):not(textarea) {
+  box-shadow: 0 0 0 2px var(--color-bg-base), 0 0 0 4px var(--color-primary);
+}
+
+/* ===== 无障碍：尊重 prefers-reduced-motion 偏好 ===== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

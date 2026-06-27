@@ -724,6 +724,40 @@ pub fn update_settings(conn: &Connection, settings: &AppSetting) -> rusqlite::Re
 }
 
 // ============================================================================
+// user_preferences 表 (KV 偏好，Task 24.1/24.4 使用)
+// ============================================================================
+
+/// 读取一个用户偏好；不存在返回 None。
+pub fn get_preference(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
+    let v: Option<String> = conn
+        .query_row(
+            "SELECT value FROM user_preferences WHERE key = ?1",
+            params![key],
+            |row| row.get::<_, String>(0),
+        )
+        .ok();
+    Ok(v)
+}
+
+/// 写入（upsert）一个用户偏好。
+pub fn set_preference(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO user_preferences (key, value, updated_at) VALUES (?1, ?2, datetime('now'))
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+/// 读取布尔偏好（"true"/"1" 视为真；不存在或解析失败返回 default）。
+pub fn get_preference_bool(conn: &Connection, key: &str, default: bool) -> bool {
+    match get_preference(conn, key) {
+        Ok(Some(v)) => v == "true" || v == "1",
+        _ => default,
+    }
+}
+
+// ============================================================================
 // FTS5 全文检索
 // ============================================================================
 

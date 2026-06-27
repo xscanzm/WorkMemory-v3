@@ -13,7 +13,12 @@
 
 use tauri::Manager;
 
+use crate::core::achievement_engine;
+use crate::core::analytics_engine;
+use crate::core::data_port;
+use crate::core::focus_engine;
 use crate::core::pet_engine;
+use crate::core::soundscape_engine;
 use crate::core::task_engine;
 use crate::db::repository;
 use crate::models;
@@ -723,6 +728,34 @@ pub fn get_today_stats(app: tauri::AppHandle) -> Result<models::DailyStats, Stri
 }
 
 // ============================================================
+// 分析引擎 (core::analytics_engine)
+// ============================================================
+
+/// 计算连续打卡天数：从今日往前数连续有 completed 任务的日期数。
+#[tauri::command]
+pub fn calculate_streak(app: tauri::AppHandle) -> Result<i64, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    analytics_engine::calculate_streak(&conn).map_err(|e| e.to_string())
+}
+
+/// 获取最近 7 天的每日统计（周报/趋势图数据源），按日期升序返回。
+#[tauri::command]
+pub fn get_weekly_stats(app: tauri::AppHandle) -> Result<Vec<models::DailyStats>, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    analytics_engine::get_weekly_stats(&conn).map_err(|e| e.to_string())
+}
+
+/// 生产力评分（0-100）：综合今日任务完成数 + 专注时长。
+#[tauri::command]
+pub fn productivity_score(app: tauri::AppHandle) -> Result<i64, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    analytics_engine::productivity_score(&conn).map_err(|e| e.to_string())
+}
+
+// ============================================================
 // 宠物引擎 (core::pet_engine)
 // ============================================================
 
@@ -787,11 +820,21 @@ pub fn save_task(app: tauri::AppHandle, task: Task) -> Result<Task, String> {
 }
 
 /// 查询全部任务（按 sort_order ASC, created_at DESC 排序）。
+///
+/// Task 22.3：新增可选 `limit` / `offset` 分页参数。
+/// 前端不传时默认 `limit=100, offset=0`，保持向后兼容（旧调用方仍取首页 100 条）。
 #[tauri::command]
-pub fn get_all_tasks(app: tauri::AppHandle) -> Result<Vec<Task>, String> {
+pub fn get_all_tasks(
+    app: tauri::AppHandle,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<Vec<Task>, String> {
     let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
     let conn = state.lock().map_err(|e| e.to_string())?;
-    task_engine::get_all_tasks(&conn).map_err(|e| e.to_string())
+    // 默认 limit=100, offset=0；显式传入时尊重调用方
+    let lim = limit.or(Some(100));
+    let off = offset.or(Some(0));
+    task_engine::get_all_tasks(&conn, lim, off).map_err(|e| e.to_string())
 }
 
 /// 按 ID 查询单个任务。
@@ -824,6 +867,195 @@ pub fn search_tasks(app: tauri::AppHandle, query: String) -> Result<Vec<Task>, S
     let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
     let conn = state.lock().map_err(|e| e.to_string())?;
     task_engine::search_tasks(&conn, &query).map_err(|e| e.to_string())
+}
+
+// ============================================================
+// 专注会话 (core::focus_engine)
+// ============================================================
+
+/// 开始专注会话：落库 focus_sessions，返回带 id 的 session（前端据此驱动计时）。
+#[tauri::command]
+pub fn start_focus_session(
+    app: tauri::AppHandle,
+    session_type: String,
+    task_id: Option<String>,
+    planned_duration: i64,
+) -> Result<models::FocusSession, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    focus_engine::start_focus_session(&conn, &session_type, task_id.as_deref(), planned_duration)
+        .map_err(|e| e.to_string())
+}
+
+/// 正常完成专注会话：写 end_time + actual duration，发布事件并触发宠物 XP 增长。
+#[tauri::command]
+pub fn complete_focus_session(
+    app: tauri::AppHandle,
+    session_id: String,
+    actual_duration: i64,
+) -> Result<models::FocusSession, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    focus_engine::complete_focus_session(&conn, &session_id, actual_duration).map_err(|e| e.to_string())
+}
+
+/// 中断专注会话：记录中断原因（interrupted=1）。
+#[tauri::command]
+pub fn interrupt_focus_session(
+    app: tauri::AppHandle,
+    session_id: String,
+    actual_duration: i64,
+    reason: String,
+) -> Result<models::FocusSession, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    focus_engine::interrupt_focus_session(&conn, &session_id, actual_duration, &reason)
+        .map_err(|e| e.to_string())
+}
+
+/// 查询今日所有专注会话（按 start_time 倒序）。
+#[tauri::command]
+pub fn get_today_focus_sessions(app: tauri::AppHandle) -> Result<Vec<models::FocusSession>, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    focus_engine::get_today_focus_sessions(&conn).map_err(|e| e.to_string())
+}
+
+// ============================================================
+// 音景包 (core::soundscape_engine)
+// ============================================================
+
+/// 获取所有已启用的音景包（前端用于渲染混音器面板）。
+#[tauri::command]
+pub fn get_soundscape_packs(app: tauri::AppHandle) -> Result<Vec<models::SoundscapePack>, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    soundscape_engine::get_soundscape_packs(&conn).map_err(|e| e.to_string())
+}
+
+/// 获取所有音景包（含禁用，用于设置页管理）。
+#[tauri::command]
+pub fn get_all_soundscape_packs(app: tauri::AppHandle) -> Result<Vec<models::SoundscapePack>, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    soundscape_engine::get_all_soundscape_packs(&conn).map_err(|e| e.to_string())
+}
+
+/// 启用/禁用指定音景包。
+#[tauri::command]
+pub fn toggle_soundscape_pack(
+    app: tauri::AppHandle,
+    id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    soundscape_engine::toggle_soundscape_pack(&conn, &id, enabled).map_err(|e| e.to_string())
+}
+
+// ============================================================
+// 数据导入/导出 (core::data_port) - Task 24.2 / 24.3
+// ============================================================
+
+/// 导出全部业务表为单个 JSON 字符串。
+#[tauri::command]
+pub fn export_data_json(app: tauri::AppHandle) -> Result<String, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    data_port::export_json(&conn).map_err(|e| e.to_string())
+}
+
+/// 导出 tasks 表为 CSV 字符串。
+#[tauri::command]
+pub fn export_tasks_csv(app: tauri::AppHandle) -> Result<String, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    data_port::export_csv_tasks(&conn).map_err(|e| e.to_string())
+}
+
+/// 导入 JSON 字符串到数据库（事务内 INSERT OR REPLACE），返回 ImportSummary。
+#[tauri::command]
+pub fn import_data_json(app: tauri::AppHandle, json_str: String) -> Result<data_port::ImportSummary, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let mut conn = state.lock().map_err(|e| e.to_string())?;
+    data_port::import_json(&mut conn, json_str).map_err(|e| e.to_string())
+}
+
+/// 清空全部业务表数据（保留 schema）。破坏性操作，前端需 ConfirmDialog 二次确认。
+#[tauri::command]
+pub fn clear_all_data(app: tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    for table in [
+        "tasks",
+        "pet_state",
+        "daily_stats",
+        "focus_sessions",
+        "achievements",
+        "soundscape_packs",
+        "pet_interaction_logs",
+        "user_preferences",
+    ] {
+        conn.execute(&format!("DELETE FROM {}", table), [])
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// ============================================================
+// 用户偏好 KV (Task 24.1 / 24.4) - 主题 / 通知开关等
+// ============================================================
+
+/// 读取一个用户偏好；不存在返回 None。
+#[tauri::command]
+pub fn get_preference(app: tauri::AppHandle, key: String) -> Result<Option<String>, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    repository::get_preference(&conn, &key).map_err(|e| e.to_string())
+}
+
+/// 写入（upsert）一个用户偏好。
+#[tauri::command]
+pub fn set_preference(app: tauri::AppHandle, key: String, value: String) -> Result<(), String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    repository::set_preference(&conn, &key, &value).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ============================================================
+// 成就引擎 (core::achievement_engine)
+// ============================================================
+
+/// 获取全部成就（目录 + 解锁状态 + 实时进度）。
+#[tauri::command]
+pub fn get_all_achievements(
+    app: tauri::AppHandle,
+) -> Result<Vec<achievement_engine::AchievementView>, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    achievement_engine::get_all_achievements(&conn).map_err(|e| e.to_string())
+}
+
+/// 手动解锁指定成就（按 code）。
+#[tauri::command]
+pub fn unlock_achievement(
+    app: tauri::AppHandle,
+    code: String,
+) -> Result<achievement_engine::AchievementView, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    achievement_engine::unlock_achievement(&conn, &code).map_err(|e| e.to_string())
+}
+
+/// 重算所有成就：评估解锁条件并写入新解锁项，返回更新后的列表。
+#[tauri::command]
+pub fn recalculate_achievements(
+    app: tauri::AppHandle,
+) -> Result<Vec<achievement_engine::AchievementView>, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    achievement_engine::recalculate_achievements(&conn).map_err(|e| e.to_string())
 }
 
 // ============================================================

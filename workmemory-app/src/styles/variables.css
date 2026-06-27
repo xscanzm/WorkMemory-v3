@@ -78,4 +78,82 @@
   --duration-slow: 250ms;
   --duration-spring: 320ms;
   --duration-bounce: 400ms;
+
+  /* ===== Spring-based 动画时长与缓动补齐 (优化 9 / Task 20) =====
+   * 仅新增 token，不重定义已存在的 --duration-fast / --duration-slow /
+   * --ease-spring / --ease-out-expo，避免破坏既有引用。 */
+  --duration-instant: 80ms;                          /* 微交互即时反馈 */
+  --duration-normal: 250ms;                          /* 标准动画时长 */
+  --ease-in-out-circ: cubic-bezier(0.85, 0, 0.15, 1); /* 对称缓动 */
+}
+
+/* ============================================================
+ * Task 24.1: 主题切换
+ * 通过 <html data-theme="dark"> / <html data-theme="high-contrast">
+ * 属性选择器覆盖 :root 中的颜色 token。SettingsView 用
+ * document.documentElement.setAttribute('data-theme', theme) 切换，
+ * 持久化到 localStorage('workmemory.theme')。
+ * 仅覆盖颜色相关 token；间距 / 圆角 / 阴影 / 动画 token 保持不变。
+ * ============================================================ */
+
+/* 深色主题：偏冷深蓝灰背景 + 高对比文字 */
+[data-theme="dark"] {
+  --color-bg-base: #0F1419;
+  --color-surface: #1A1F26;
+  --color-surface-subtle: #232932;
+  --color-surface-glass: rgba(26, 31, 38, 0.75);
+  --color-surface-glass-strong: rgba(26, 31, 38, 0.88);
+  --color-border: #2E353F;
+  --color-border-hover: #3B4451;
+  --color-text-main: #E6EAF0;
+  --color-text-muted: #9AA4B2;
+  --color-text-light: #6B7280;
+  --color-primary: #3B82F6;
+  --color-primary-soft: rgba(59, 130, 246, 0.18);
+  --color-success: #34D399;
+  --color-success-soft: rgba(52, 211, 153, 0.15);
+  --color-warning: #FBBF24;
+  --color-danger: #F87171;
+  --color-private: #A78BFA;
+  --color-private-soft: rgba(167, 139, 250, 0.18);
+  --color-accent: #A78BFA;
+  --color-accent-soft: rgba(167, 139, 250, 0.18);
+  --color-secondary: #22D3EE;
+  --color-secondary-soft: rgba(34, 211, 238, 0.15);
+  --color-on-primary: #FFFFFF;
+  --color-on-danger: #FFFFFF;
+  --color-scrollbar-thumb: rgba(255, 255, 255, 0.18);
+  --color-canvas-edge: rgba(255, 255, 255, 0.18);
+  --color-canvas-label: #E6EAF0;
+}
+
+/* 高对比度主题：黑白底 + 加粗边框，提升无障碍可读性 (WCAG AAA) */
+[data-theme="high-contrast"] {
+  --color-bg-base: #000000;
+  --color-surface: #FFFFFF;
+  --color-surface-subtle: #F0F0F0;
+  --color-surface-glass: rgba(255, 255, 255, 0.95);
+  --color-surface-glass-strong: rgba(255, 255, 255, 1);
+  --color-border: #000000;
+  --color-border-hover: #000000;
+  --color-text-main: #000000;
+  --color-text-muted: #1F1F1F;
+  --color-text-light: #333333;
+  --color-primary: #0000CC;
+  --color-primary-soft: #E6E6F5;
+  --color-success: #006600;
+  --color-success-soft: #E6F5E6;
+  --color-warning: #B25C00;
+  --color-danger: #B30000;
+  --color-private: #5A00B3;
+  --color-private-soft: #F0E6FA;
+  --color-accent: #5A00B3;
+  --color-accent-soft: #F0E6FA;
+  --color-secondary: #006688;
+  --color-secondary-soft: #E6F4F8;
+  --color-on-primary: #FFFFFF;
+  --color-on-danger: #FFFFFF;
+  --color-scrollbar-thumb: rgba(0, 0, 0, 0.5);
+  --color-canvas-edge: rgba(0, 0, 0, 0.9);
+  --color-canvas-label: #000000;
 }

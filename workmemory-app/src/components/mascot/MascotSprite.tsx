@@ -8,6 +8,11 @@
  * - backgroundPosition 步进 bgX=-(frame*CELL_W)、bgY=-(config.row*CELL_H)
  * - backgroundSize `auto ${CELL_H*scale*9}px`
  * - imageRendering:'pixelated'、cursor:'grab'、userSelect:'none'
+ *
+ * Task 22.2：新增 `mode: 'canvas' | 'dom'`（默认 'dom'）。
+ * - 'dom'（默认）：原有 background-position 帧步进，样式不变。
+ * - 'canvas'：通过 <canvas> + ctx.drawImage 切片渲染每帧，作为性能模式。
+ *   复用 CELL_W / CELL_H / STATE_ROWS；spritesheet 由 new Image() 挂载时加载一次。
  */
 import { useEffect, useRef, useState } from 'react';
 import type { MascotStateName } from '@/types';
@@ -36,6 +41,8 @@ export interface MascotSpriteProps {
   mascotId: number;
   state: MascotStateName;
   scale?: number;
+  /** 渲染模式：'dom'（默认，background-position 帧步进）/ 'canvas'（drawImage 切片，性能模式） */
+  mode?: 'canvas' | 'dom';
   onAnimationEnd?: () => void;
 }
 
@@ -56,7 +63,7 @@ function buildSpriteSrc(mascotId: number): string {
 }
 
 function MascotSprite(props: MascotSpriteProps): JSX.Element {
-  const { mascotId, state, scale = 1.0, onAnimationEnd } = props;
+  const { mascotId, state, scale = 1.0, mode = 'dom', onAnimationEnd } = props;
   const config: StateConfig = STATE_ROWS[state];
 
   const [frame, setFrame] = useState(0);
@@ -64,6 +71,60 @@ function MascotSprite(props: MascotSpriteProps): JSX.Element {
   // onAnimationEnd 用 ref 持有，避免 effect 因回调引用变化而重启动画
   const onEndRef = useRef(onAnimationEnd);
   onEndRef.current = onAnimationEnd;
+
+  // ===== Canvas 模式资源 =====
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const spriteImgRef = useRef<HTMLImageElement | null>(null);
+  const [imgReady, setImgReady] = useState(false);
+  const spriteSrc = buildSpriteSrc(mascotId);
+
+  // Canvas 模式：挂载时加载一次 spritesheet Image（drawImage 切片源）
+  useEffect(() => {
+    if (mode !== 'canvas') {
+      // 切回 DOM 模式时清理 canvas 资源状态
+      spriteImgRef.current = null;
+      setImgReady(false);
+      return;
+    }
+    let cancelled = false;
+    const img = new Image();
+    img.onload = () => {
+      if (cancelled) return;
+      spriteImgRef.current = img;
+      setImgReady(true);
+    };
+    img.onerror = () => {
+      // 静默降级：dev 环境资源缺失时 canvas 保持空白（与 DOM 模式 graceful degradation 一致）
+      if (cancelled) return;
+      spriteImgRef.current = null;
+      setImgReady(false);
+    };
+    img.src = spriteSrc;
+    return () => {
+      cancelled = true;
+      spriteImgRef.current = null;
+      setImgReady(false);
+    };
+  }, [mode, spriteSrc]);
+
+  // Canvas 模式：frame / row / scale / imgReady 任一变化时重绘当前帧
+  useEffect(() => {
+    if (mode !== 'canvas') return;
+    const canvas = canvasRef.current;
+    const img = spriteImgRef.current;
+    if (!canvas || !img || !imgReady) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const sx = frame * CELL_W;
+    const sy = config.row * CELL_H;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(
+      img,
+      sx, sy, CELL_W, CELL_H,
+      0, 0, CELL_W * scale, CELL_H * scale,
+    );
+  }, [mode, frame, imgReady, config.row, scale]);
 
   useEffect(() => {
     // 每次切换状态都从第 0 帧开始
@@ -110,12 +171,37 @@ function MascotSprite(props: MascotSpriteProps): JSX.Element {
     };
   }, [state, mascotId, config.row, config.frames, config.fps, config.loop]);
 
-  const bgX = -(frame * CELL_W);
-  const bgY = -(config.row * CELL_H);
-  const spriteSrc = buildSpriteSrc(mascotId);
-
   const w = CELL_W * scale;
   const h = CELL_H * scale;
+
+  // ===== Canvas 模式：drawImage 切片渲染 =====
+  if (mode === 'canvas') {
+    // canvas 缓冲像素分辨率 = CELL × scale（向上取整保证非整数 scale 也不丢帧）
+    const bufferW = Math.max(1, Math.round(CELL_W * scale));
+    const bufferH = Math.max(1, Math.round(CELL_H * scale));
+    return (
+      <canvas
+        ref={canvasRef}
+        role="img"
+        aria-label={`mascot-${state}`}
+        width={bufferW}
+        height={bufferH}
+        style={{
+          width: w,
+          height: h,
+          imageRendering: 'pixelated',
+          cursor: 'grab',
+          userSelect: 'none',
+          // 透明窗口内不需要额外背景色
+          backgroundColor: 'transparent',
+        }}
+      />
+    );
+  }
+
+  // ===== DOM 模式（默认）：background-position 帧步进（保持原有样式与行为） =====
+  const bgX = -(frame * CELL_W);
+  const bgY = -(config.row * CELL_H);
 
   return (
     <div

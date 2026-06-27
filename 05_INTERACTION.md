@@ -149,3 +149,101 @@
 
         *💡 提示: 已启用本地降级模板。填入 OpenAI Key 后即可享受 AI 自动润色与逻辑合并。*
         ```
+
+---
+
+## v3 交互状态机 (2026-06)
+
+> 本节补全 WorkMemory-v3 三条核心交互状态机：任务、专注会话、宠物互动，以及宠物属性的时间衰减调度。实现真源为 `/workspace/workmemory-app/src-tauri/src/core/{task_engine,focus_engine,pet_engine,scheduler}.rs`。
+
+### 1. 任务状态机（单向流转，archived 终态）
+
+```
+   inbox ──► todo ──► in_progress ──► completed ──► archived
+     │         │           │               │
+     │         │           │               └─► archived (跳级归档)
+     │         │           └─► archived
+     │         └─► completed / archived
+     └─► in_progress / completed / archived
+                       │
+                       ▼
+                  archived (终态，无出边)
+```
+
+| 源状态 | 允许目标 | 说明 |
+|---|---|---|
+| `inbox` | `todo / in_progress / completed / archived` | 收件箱可任意前移或直接归档 |
+| `todo` | `in_progress / completed / archived` | 待办不可回退到 inbox |
+| `in_progress` | `completed / archived` | 进行中不可回退到 todo |
+| `completed` | `archived` | 已完成仅能归档 |
+| `archived` | （无） | **终态**，任何转换均拒绝 |
+
+*   **守卫实现**：`task_engine.rs::validate_transition(from, to)`，`update_task` 在写库前先查当前 `status` 并校验，非法流转返回 `AppError::ValidationError("非法状态流转：{from} → {to}（archived 为终态，不可转换）")`。`from == to` 视为合法（幂等更新）。
+*   **前端表现**：`TaskCard` 按 `STATUS_ORDER = [inbox, todo, in_progress, completed, archived]` 渲染状态徽章；`archived` 卡片隐藏推进 / 编辑操作，仅保留「删除」入口（走 ConfirmDialog 二次确认）。
+
+### 2. 专注会话流程（idle → running → paused → completed / interrupted）
+
+```
+   idle ──start──► running ──┬──complete──► completed (interrupted=0)
+        (落库 start_time)     │
+                              ├──pause──► paused ──resume──► running
+                              │
+                              └──interrupt──► interrupted (interrupted=1, 记录 reason)
+```
+
+| 阶段 | 后端调用 | 落库字段 |
+|---|---|---|
+| 开始 | `start_focus_session(type, task_id?, planned_duration)` | INSERT `focus_sessions`（`end_time=NULL`，`duration_seconds=计划时长`） |
+| 完成 | `complete_focus_session(id, actual_duration)` | UPDATE `end_time` + 实际时长 + `interrupted=0`；发布 `FocusCompleted{focus_seconds}`；同步 `pet_engine::on_focus_completed`（+20 XP / +10 energy） |
+| 中断 | `interrupt_focus_session(id, actual_duration, reason)` | UPDATE `end_time` + 实际时长 + `interrupted=1` + `interruption_reason` |
+| 查询 | `get_today_focus_sessions()` | 按 `substr(start_time,1,10)=今日` 过滤，`ORDER BY start_time DESC` |
+
+*   **类型**：`type ∈ {pomodoro, free}`。番茄钟默认 25 分钟工作 + 5 分钟休息（前端 `FocusView` 控制计时与休息切换）；自由计时由用户手动 start/stop。
+*   **关联任务**：`task_id` 可选（自由计时允许无关联），未建物理外键，删除任务不阻断历史会话查询。
+*   **暂停态**：纯前端状态（计时器 `setInterval` 暂停），不落库；后端只在 complete/interrupt 时回写终态。
+
+### 3. 宠物交互流程（action → save_pet_state → log_interaction → mood 重算）
+
+```
+   用户点击喂食/玩耍/休息/清洁按钮
+        │ (Tauri command)
+        ▼
+   pet_engine::feed / play / rest / clean(&conn)
+        │
+        ├─ get_pet_state (读单行 id='default')
+        ├─ 修改属性（feed: +hunger/+happiness；play: +happiness/-energy/+bond；
+        │            rest: +energy(→mood='sleeping')；clean: +cleanliness/+happiness）
+        ├─ infer_mood(hunger, energy, happiness)  ← 重算 mood（rest 强制 sleeping）
+        ├─ save_pet_state  → UPDATE pet_state (属性 clamp [0,100])
+        └─ log_interaction(action, delta JSON) → INSERT pet_interaction_logs
+        │
+        ▼
+   前端 petStore 刷新 → PetSpriteDisplay 按 mood 切换动画
+```
+
+| 动作 | 属性变化 | mood |
+|---|---|---|
+| `feed` | hunger +20, happiness +5 | `infer_mood` 重算 |
+| `play` | happiness +15, energy -10, bond +1 | `infer_mood` 重算 |
+| `rest` | energy +30 | 强制 `sleeping` |
+| `clean` | cleanliness +25, happiness +3 | `infer_mood` 重算 |
+
+*   **mood 阈值**（`infer_mood` 按 `(hunger+energy+happiness)/3`）：≥90 `ecstatic`、≥75 `happy`、≥60 `content`、≥45 `neutral`、≥30 `sad`、<30 `angry`。
+*   **衍生触发**：任务完成 → `on_task_completed`（+10 XP / +5 hunger）；专注完成 → `on_focus_completed`（+20 XP / +10 energy）。两者均走 `apply_xp` 循环连升并落 `pet_interaction_logs`（action 分别为 `task_completed` / `focus_completed`）。
+
+### 4. 宠物属性时间衰减调度
+
+```
+   BackgroundScheduler 协程 ①（每小时）
+        │ tokio::time::sleep(3600s)
+        ▼
+   pet_engine::decay(&conn, hours_elapsed=1.0)
+        ├─ hunger = clamp(hunger × (1 - 0.05 × 1))   →  每小时 -5%
+        ├─ energy = clamp(energy × (1 - 0.03 × 1))   →  每小时 -3%
+        ├─ infer_mood(...) 重算
+        └─ save_pet_state → UPDATE pet_state
+```
+
+*   **公式**：`new = clamp(old × (1 - rate × hours))`，`hunger` 衰减率 `0.05/hr`、`energy` 衰减率 `0.03/hr`。属性统一钳制 `[0,100]`，避免越界。
+*   **调度**：`scheduler.rs::start_scheduler` 启动后**先等满 1 小时**再首次执行，随后每小时循环。通过 `app.state::<Mutex<Connection>>` 取库连接，失败仅 `log::warn` 不影响主进程。
+*   **23:00 每日摘要**：调度器协程 ② 每分钟检查本地时钟，命中 `23:00` 触发 `run_daily_summary`（当前为占位 `log::info`，实际蒸馏由 `distill` 模块负责），触发后睡眠 1 小时避免同分钟内重复触发。

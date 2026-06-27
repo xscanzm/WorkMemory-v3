@@ -225,6 +225,96 @@ export async function getGraphData(): Promise<GraphData> {
   return invoke<GraphData>('get_graph_data');
 }
 
+// ===== Task 24: 数据导入/导出 + 用户偏好 + 音景管理 =====
+
+/** 音景包 DTO（与后端 models.rs::SoundscapePack 对齐，camelCase） */
+export interface SoundscapePack {
+  id: string;
+  name: string;
+  description: string;
+  layers: string[];
+  enabled: boolean;
+  createdAt: string;
+}
+
+/** 导入摘要：每张表成功插入的行数 + 总数 */
+export interface ImportSummary {
+  imported: Record<string, number>;
+  total: number;
+}
+
+/** 导出全部业务表为 JSON 字符串 (Task 24.2) */
+export async function exportDataJson(): Promise<string> {
+  return invoke<string>('export_data_json');
+}
+
+/** 导出 tasks 表为 CSV 字符串 (Task 24.2) */
+export async function exportTasksCsv(): Promise<string> {
+  return invoke<string>('export_tasks_csv');
+}
+
+/** 导入 JSON 字符串到数据库，返回每表插入行数摘要 (Task 24.3) */
+export async function importDataJson(jsonStr: string): Promise<ImportSummary> {
+  return invoke<ImportSummary>('import_data_json', { jsonStr });
+}
+
+/** 清空全部业务数据（破坏性操作，前端需 ConfirmDialog 二次确认） */
+export async function clearAllData(): Promise<void> {
+  await invoke<void>('clear_all_data');
+}
+
+/** 读取用户偏好；不存在返回 null */
+export async function getPreference(key: string): Promise<string | null> {
+  return invoke<string | null>('get_preference', { key });
+}
+
+/** 写入（upsert）用户偏好 */
+export async function setPreference(key: string, value: string): Promise<void> {
+  await invoke<void>('set_preference', { key, value });
+}
+
+/** 获取所有音景包（含禁用，用于设置页管理） */
+export async function getAllSoundscapePacks(): Promise<SoundscapePack[]> {
+  return invoke<SoundscapePack[]>('get_all_soundscape_packs');
+}
+
+/** 启用 / 禁用指定音景包 */
+export async function toggleSoundscapePack(
+  id: string,
+  enabled: boolean,
+): Promise<void> {
+  await invoke<void>('toggle_soundscape_pack', { id, enabled });
+}
+
+/**
+ * 发送系统通知 (Task 24.4)
+ * 仅在 Tauri 环境下调用 @tauri-apps/plugin-notification 的 sendNotification。
+ * 非 Tauri 环境降级为 noop（toast 仍会显示）。
+ */
+export async function sendSystemNotification(
+  title: string,
+  body: string,
+): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    const m = await import('@tauri-apps/plugin-notification');
+    // 部分平台首次需要请求权限；忽略拒绝错误（toast 已覆盖通知场景）
+    try {
+      const granted = await m.isPermissionGranted();
+      if (!granted) {
+        await m.requestPermission();
+      }
+    } catch {
+      // 权限请求失败不阻断，仍尝试发送
+    }
+    await m.sendNotification({ title, body });
+  } catch (err) {
+    // 系统通知失败不影响业务，仅记录
+    // eslint-disable-next-line no-console
+    console.warn('[sendSystemNotification] 失败', err);
+  }
+}
+
 /**
  * 统一对外暴露的 api 对象。
  */
@@ -254,4 +344,14 @@ export const api = {
   getCalendarMonth,
   getInsights,
   getGraphData,
+  // Task 24
+  exportDataJson,
+  exportTasksCsv,
+  importDataJson,
+  clearAllData,
+  getPreference,
+  setPreference,
+  getAllSoundscapePacks,
+  toggleSoundscapePack,
+  sendSystemNotification,
 };

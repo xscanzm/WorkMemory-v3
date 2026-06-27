@@ -17,7 +17,8 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_global_shortcut::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::default().build())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // 初始化数据库（WAL + 外键 + 迁移）
             let app_data_dir = app.path().app_data_dir().expect("无法获取 app_data_dir");
@@ -89,6 +90,27 @@ pub fn run() {
             ipc::commands::update_task,
             ipc::commands::delete_task,
             ipc::commands::search_tasks,
+            ipc::commands::start_focus_session,
+            ipc::commands::complete_focus_session,
+            ipc::commands::interrupt_focus_session,
+            ipc::commands::get_today_focus_sessions,
+            ipc::commands::get_soundscape_packs,
+            ipc::commands::get_all_soundscape_packs,
+            ipc::commands::toggle_soundscape_pack,
+            ipc::commands::get_weekly_stats,
+            ipc::commands::calculate_streak,
+            ipc::commands::productivity_score,
+            // Task 24: 数据导入/导出 + 用户偏好
+            ipc::commands::export_data_json,
+            ipc::commands::export_tasks_csv,
+            ipc::commands::import_data_json,
+            ipc::commands::clear_all_data,
+            ipc::commands::get_preference,
+            ipc::commands::set_preference,
+            // Task 23: 成就引擎
+            ipc::commands::get_all_achievements,
+            ipc::commands::unlock_achievement,
+            ipc::commands::recalculate_achievements,
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 启动失败");

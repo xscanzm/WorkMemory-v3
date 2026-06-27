@@ -144,3 +144,38 @@ windows = { version = "0.58", features = [
     1.  **Wiki 知识库**：自研轻量双链 Markdown 编辑器，支持 Review Queue 推荐沉淀机制。
     2.  **向量语义检索**：接入 Embedding API，支持“我上周看过的蓝色背景 PPT”等高级意图搜索。
     3.  **记忆关系图谱 (Graph)**：基于 SQLite 外键和文本关联计算，渲染人、事、项目、时间、文档的连接导图。
+
+---
+
+## v3 设计合规补全 (2026-06)
+
+> 本节记录 WorkMemory-v3 在「任务 / 宠物 / 专注 / 分析」四大新增业务域落地的架构决策，对应 `analysis_results.md` 中 8 个缺失引擎与 13 个缺失组件的补全。所有决策均已落地为 `/workspace/workmemory-app/src-tauri/src/core/` 下的可编译模块。
+
+### A1. 任务引擎 (TaskEngine)
+*   **决策**：任务 ID 由**后端统一生成 `uuid v4`**（`uuid::Uuid::new_v4()`），禁止前端用 `Date.now()` 拼接（修复 BUG-001）。状态采用**单向状态机** `inbox → todo → in_progress → completed → archived`，其中 `archived` 为终态不可再流转，由 `task_engine::validate_transition` 在 `update_task` 内强制守卫（修复 BUG-002/003）。任务全文检索复用 **FTS5 虚拟表 `fts_tasks`**，对中文子串场景在 FTS5 `MATCH` 无命中时回退 `LIKE` 模糊匹配（见 `task_engine.rs::search_tasks`）。
+*   **实现**：`/workspace/workmemory-app/src-tauri/src/core/task_engine.rs`，公开 `save_task / get_all_tasks / get_task / update_task / delete_task / search_tasks / validate_transition`。
+
+### A2. 宠物引擎 (PetEngine)
+*   **决策**：桌面伙伴沿用 `pet/{1..9}/spritesheet.webp` 物理规格（cellWidth 192 / rowHeight 208 / 9 行），前端 `PetSpriteDisplay` 将 `pet_state.mood` 映射到 `MascotStateName`，精灵图加载失败时降级为 emoji（修复 BUG-012 空白方框）。XP 升级公式锁定为 `XP_needed = level*100 + (level-1)*50`（Level 1→100、2→250、3→400），由 `apply_xp` 循环处理连升。时间衰减按小时线性：`hunger -5%/hr、energy -3%/hr`，属性统一钳制到 `[0,100]`。
+*   **实现**：`/workspace/workmemory-app/src-tauri/src/core/pet_engine.rs`，公开 `save_pet_state / get_pet_state / feed / play / rest / clean / on_task_completed / on_focus_completed / decay / apply_xp / xp_needed_for_next_level / infer_mood`，每次交互落 `pet_interaction_logs`。
+
+### A3. 专注引擎 (FocusEngine)
+*   **决策**：专注会话支持两种类型 `pomodoro`（番茄钟）/`free`（自由计时），会话生命周期 `start → complete|interrupt`，开始即落库 `focus_sessions`（写入计划时长），完成时回写 `end_time + 实际时长` 并发布 `FocusCompleted` 事件，中断时记录 `interrupted=1 + interruption_reason`。`complete_focus_session` 同步调用 `pet_engine::on_focus_completed`（+20 XP / +10 energy），best-effort 忽略未初始化错误。
+*   **实现**：`/workspace/workmemory-app/src-tauri/src/core/focus_engine.rs`，公开 `start_focus_session / complete_focus_session / interrupt_focus_session / get_focus_session / get_today_focus_sessions`。
+
+### A4. 分析引擎 (AnalyticsEngine)
+*   **决策**：与基础 `stats_engine` 分层——本模块只负责**派生计算**。`calculate_streak` 从今日/昨日往前数连续有 `completed` 任务的日期数（允许今日未完成）。`on_task_completed / on_focus_completed` 以 `INSERT ... ON CONFLICT(date) DO UPDATE` 幂等 upsert `daily_stats`。生产力评分 `productivity_score = min(tasks*10 + focus_minutes, 100)`。
+*   **实现**：`/workspace/workmemory-app/src-tauri/src/core/analytics_engine.rs`，公开 `calculate_streak / get_weekly_stats / on_task_completed / on_focus_completed / productivity_score / get_daily_stats`。
+
+### A5. 事件总线 (EventBus)
+*   **决策**：模块间解耦采用 `tokio::sync::broadcast` channel（容量 256），`AppEvent` 枚举含 `TaskCompleted / FocusCompleted / PetInteraction / PetLevelUp` 四类，全局单例由 `OnceLock` 持有（`global_event_bus()`）。`publish` 忽略无订阅者错误，订阅者通过 `subscribe()` 拿 `broadcast::Receiver`。
+*   **实现**：`/workspace/workmemory-app/src-tauri/src/core/event_bus.rs`。
+
+### A6. 后台调度器 (BackgroundScheduler)
+*   **决策**：两条 `tauri::async_runtime::spawn` 协程——①每小时触发 `pet_engine::decay(&conn, 1.0)`；②每分钟检查本地时钟，命中 `23:00` 触发每日摘要（占位，实际蒸馏由 `distill` 模块负责）并随后睡眠 1 小时避免重复。调度器在 `lib.rs` 启动阶段注入 `AppHandle`，通过 `app.state::<Mutex<Connection>>` 取库连接。
+*   **实现**：`/workspace/workmemory-app/src-tauri/src/core/scheduler.rs`，公开 `start_scheduler`。
+
+### A7. 统一错误类型 (AppError) 与前端错误反馈
+*   **决策**：新建 `core/error.rs` 定义 `AppError` 枚举（`DbError / IoError / NotFoundError / ValidationError / Internal`），`#[serde(tag="kind", content="message")]` 序列化便于前端按 `kind` 差异化处理。实现 `From<rusqlite::Error> / From<std::io::Error> / From<serde_json::Error>` 自动转换，并提供 `AppResult<T>` 别名。所有 Tauri 命令返回 `Result<T, AppError>` 替代裸 `Result<T, String>`（修复 BUG-013）。
+*   **前端策略**：所有用户可见操作通过 `Toast`（`createPortal` 渲染、毛玻璃 + 左侧 4px 语义色边框、3 秒自动消失、`×` 手动关闭，类型 `success/error/info`）反馈成败；`ErrorBoundary`（React class 组件）捕获渲染期异常并展示降级 UI + 重试按钮，包裹整个 `MainLayout`。`ConfirmDialog` 负责破坏性操作（删除/归档）二次确认。
+*   **实现**：`/workspace/workmemory-app/src-tauri/src/core/error.rs`、`/workspace/workmemory-app/src/components/Toast.tsx`、`/workspace/workmemory-app/src/components/ErrorBoundary.tsx`、`/workspace/workmemory-app/src/components/ConfirmDialog.tsx`。

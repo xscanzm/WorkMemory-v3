@@ -73,3 +73,40 @@
     *   一眼就能看清当前的系统捕获状态（正在记录 / 隐私保护 / 暂停）。
 2.  **截出一张好看的产品图**：
     *   随便对今日页、日历页、报告页或 Wiki 页截一张图，都必须具有极致的单色主义美感和极高像素精细度（Pixel-Perfect），能直接用于 App Store 或官网宣发。
+
+---
+
+## v3 设计系统与质量规范 (2026-06)
+
+> 本节补全 WorkMemory-v3 的设计系统升级、i18n 架构、无障碍 WCAG 2.1 AA 合规与统一错误处理策略。所有规范均已落地为可编译/可渲染代码，源真见 `/workspace/workmemory-app/src/styles/`、`/workspace/workmemory-app/src/i18n/`、`/workspace/workmemory-app/src-tauri/src/core/error.rs`。
+
+### 1. 设计系统升级（Inter + JetBrains Mono + Spring + Glassmorphism）
+
+*   **字体**：`variables.css` 定义 `--font-sans: "Inter", "PingFang SC", "Microsoft YaHei", ...`、`--font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", ...`。`index.css` 对 `code/pre/.mono` 应用等宽字体。**离线优先**：不引入 Google Fonts `@import`（被 CSP `style-src 'self' 'unsafe-inline'` / `font-src 'self' data:` 禁止），优先用系统已安装版本，未安装回退到 PingFang SC / SF Mono；如需打包 woff2 放入 `public/fonts/`。
+*   **Spring 弹性动画**：`--ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1)`（弹性出场）、`--ease-spring-soft: cubic-bezier(0.25, 0.46, 0.45, 0.94)`（柔和弹性）、`--ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1)`。时长档位 `--duration-instant: 80ms` / `--duration-fast: 150ms` / `--duration-base: 200ms` / `--duration-normal: 250ms` / `--duration-slow: 250ms` / `--duration-spring: 320ms` / `--duration-bounce: 400ms`。`index.css` 提供 `.animate-spring` / `.animate-spring-in` / `.spring-in` / `.bounce-in` / `.animate-slide-up` / `.animate-fade-in` 工具类。
+*   **Glassmorphism 毛玻璃**：`--blur-acrylic: blur(20px)`、`--blur-glass-strong: blur(40px) saturate(180%)`、`--blur-glass-subtle: blur(8px)`。`index.css` 提供 `.glass-panel` / `.glass-panel-strong` / `.glass-panel-subtle` / `.glass` 工具类，配合 `--color-surface-glass: rgba(255,255,255,0.75)`。Sidebar、Popover、Tooltip、Toast、Modal 遮罩均强制启用毛玻璃。
+*   **强调色补齐**：在原蓝紫基调上新增 `--color-accent: #8B5CF6`（与 privacy 系列协调）、`--color-secondary: #06B6D4`（青色二级）、`--color-on-primary: #FFFFFF`、Canvas / 滚动条 / 高亮 mark 等专用 token，禁止在组件内 Hardcode 颜色。
+
+### 2. i18n 架构（轻量 React Context + localStorage，禁用 i18next）
+
+*   **方案**：`/workspace/workmemory-app/src/i18n/index.tsx` 使用 `createContext` + `useState` + `useCallback`，**零外部依赖**（不引入 `i18next` / `react-i18next`）。`I18nProvider` 包裹根组件，`useI18n()` 暴露 `{ locale, t, setLocale }`。
+*   **语言包**：`zh-CN.ts` / `en-US.ts` 导出 `TranslationMap`（`Record<string, string>`），`LOCALE_MAP` 注册两种 `Locale`。
+*   **持久化**：写入 `localStorage['workmemory.locale']`，启动时读取并校验在 `LOCALE_MAP` 内，默认 `zh-CN`。
+*   **占位符插值**：`t(key, params)` 支持 `{name}` 占位符，用 `RegExp` 全局替换；查找失败回退到 key 本身（不抛错）。
+*   **切换入口**：`SettingsView` 语言分区调用 `setLocale`，即时生效无需刷新。
+
+### 3. 无障碍 WCAG 2.1 AA 合规
+
+*   **prefers-reduced-motion**：`index.css` `@media (prefers-reduced-motion: reduce)` 对 `*` 强制 `animation-duration: 0.01ms !important`、`animation-iteration-count: 1 !important`、`transition-duration: 0.01ms !important`、`scroll-behavior: auto !important`，尊重用户系统级动效偏好。
+*   **:focus-visible**：全局 `:focus-visible` 提供 `outline: 2px solid var(--color-primary)` + `outline-offset: 2px` + `border-radius: var(--radius-sm)`；圆角元素额外 `box-shadow: 0 0 0 2px bg-base, 0 0 0 4px primary` 保证 outline 不被裁剪；鼠标点击（`:focus:not(:focus-visible)`）不显示 outline，仅键盘 Tab 导航时显示。
+*   **aria-label 覆盖**：纯图标按钮必须带 `aria-label`（如 `FAB` 的 `aria-label="新建任务"`、Sidebar `<nav aria-label="主导航">`）；图标导航项经 Radix Tooltip 提供文本。新增组件交付时同步核查 aria-label。
+*   **触摸目标 ≥ 44×44px**：Sidebar 导航项 48×48px、FAB / TaskCard 操作按钮均满足 WCAG 2.1 AA 最小触摸目标要求。
+
+### 4. 错误处理策略（AppError → Toast 反馈）
+
+*   **后端**：`core/error.rs` 定义 `AppError` 枚举（`DbError / IoError / NotFoundError / ValidationError / Internal`），`#[serde(tag="kind", content="message")]` 序列化为 `{kind, message}`。所有 Tauri 命令返回 `Result<T, AppError>`（替代裸 `Result<T, String>`，修复 BUG-013）。实现 `From<rusqlite::Error> / From<std::io::Error> / From<serde_json::Error>` 自动转换，并提供 `internal() / validation() / not_found()` 构造助手与 `AppResult<T>` 别名。
+*   **前端策略**：
+    1.  **所有用户可见操作**通过 `Toast`（`createPortal` 渲染、毛玻璃 + 左侧 4px 语义色边框、3 秒自动消失、`×` 手动关闭，类型 `success / error / info`）反馈成败。原 15+ 处 `console.error` catch 块已改造接入 `toastStore`。
+    2.  **渲染期异常**由 `ErrorBoundary`（React class 组件）捕获，展示降级 UI + 重试按钮，包裹整个 `MainLayout`，避免白屏。
+    3.  **破坏性操作**（删除任务 / 归档）走 `ConfirmDialog` 二次确认，`danger=true` 时确认按钮变红。
+*   **错误分级映射**：前端按 `AppError.kind` 差异化处理——`NotFoundError` 显示空态、`ValidationError` 高亮字段并 toast、`DbError / IoError / Internal` 走通用 error toast。

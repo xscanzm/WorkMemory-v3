@@ -198,3 +198,86 @@ pub struct SearchResult {
     pub match_reason: String,    // "OCR命中", "语义命中", "Wiki关联"
 }
 ```
+
+---
+
+## v3 新增引擎模块 (2026-06)
+
+> 本节补全 `/workspace/workmemory-app/src-tauri/src/core/` 下 8 个新增引擎模块的职责、公开 API 与依赖关系。所有模块均为无状态函数集合（除 `EventBus` 与 `Scheduler` 持有句柄），以 `&Connection` 入参调用，便于在 Tauri `State<Mutex<Connection>>` 中复用。详细决策见 `01_ARCHITECTURAL_DECISIONS.md` §v3。
+
+### 模块清单
+
+| 文件 | 职责 | 公开 API | 依赖 |
+|---|---|---|---|
+| `error.rs` | 统一错误类型 `AppError`（Db/Io/NotFound/Validation/Internal）+ `From` 转换 + `AppResult<T>` | `AppError::{internal,validation,not_found}`、`AppResult` | `rusqlite`、`serde_json` |
+| `task_engine.rs` | 任务 CRUD + 单向状态机守卫 + FTS5 搜索 | `save_task / get_all_tasks / get_task / update_task / delete_task / search_tasks / validate_transition` | `error`、`models::Task`、`uuid`、`chrono` |
+| `pet_engine.rs` | 宠物状态 + XP 升级 + 衍生计算 + 时间衰减 | `save_pet_state / get_pet_state / feed / play / rest / clean / on_task_completed / on_focus_completed / decay / apply_xp / xp_needed_for_next_level / infer_mood` | `error`、`models::PetState` |
+| `focus_engine.rs` | 番茄钟/自由计时会话生命周期 + 事件发布 | `start_focus_session / complete_focus_session / interrupt_focus_session / get_focus_session / get_today_focus_sessions` | `error`、`event_bus`、`pet_engine`、`models::FocusSession` |
+| `analytics_engine.rs` | 派生统计：连续天数 / 周报 / 生产力评分 + daily_stats 幂等 upsert | `calculate_streak / get_weekly_stats / on_task_completed / on_focus_completed / productivity_score / get_daily_stats` | `error`、`models::DailyStats` |
+| `soundscape_engine.rs` | 白噪音音景包加载 + 启用切换 | `get_soundscape_packs / get_all_soundscape_packs / toggle_soundscape_pack` | `error`、`models::SoundscapePack` |
+| `event_bus.rs` | 模块间 `tokio::broadcast` 解耦（容量 256，全局 OnceLock 单例） | `EventBus::new/publish/subscribe`、`global_event_bus()`、`AppEvent` | `tokio::sync::broadcast` |
+| `scheduler.rs` | 后台定时任务（每小时宠物衰减 / 每日 23:00 摘要） | `start_scheduler` | `tauri::Manager`、`pet_engine`、`chrono` |
+
+### 调用链（事件驱动）
+
+`focus_engine::complete_focus_session` 是 v3 的核心编排点：完成会话时同步触发宠物 XP 增长 + 发布 `FocusCompleted` 事件供 `AnalyticsEngine` 累加专注时长。任务完成侧（`task_engine`→`pet_engine`→`analytics_engine`）由前端 Tauri 命令显式串联。
+
+```
+┌───────────────────────── TaskCompleted 链 ─────────────────────────┐
+│ 前端 update_task(status=completed)                                  │
+│        │ (Tauri command)                                            │
+│        ▼                                                            │
+│ task_engine::update_task  ── 校验 validate_transition(inbox→completed)│
+│        │                                                            │
+│        ├─(前端命令链显式调用)──► pet_engine::on_task_completed      │
+│        │                              │                              │
+│        │                              ├─ apply_xp(+10) ─► level up? │
+│        │                              ├─ hunger += 5 (clamp 0..100) │
+│        │                              ├─ infer_mood(...)            │
+│        │                              ├─ UPDATE pet_state           │
+│        │                              └─ INSERT pet_interaction_logs│
+│        │                                  (action='task_completed')  │
+│        │                                                            │
+│        └─(前端命令链显式调用)──► analytics_engine::on_task_completed│
+│                                       │                             │
+│                                       ├─ calculate_streak (含今日)  │
+│                                       └─ upsert daily_stats         │
+│                                           (tasks_completed +1)      │
+└─────────────────────────────────────────────────────────────────────┘
+
+
+┌──────────────────────── FocusCompleted 链 ──────────────────────────┐
+│ focus_engine::complete_focus_session(session_id, actual_duration)   │
+│        │                                                            │
+│        ├─ UPDATE focus_sessions SET end_time, duration_seconds      │
+│        │                                                            │
+│        ├─ global_event_bus().publish(FocusCompleted{focus_seconds}) │
+│        │        │                                                   │
+│        │        └─► (订阅者 best-effort) analytics_engine           │
+│        │             ::on_focus_completed(focus_seconds)            │
+│        │                  └─ upsert daily_stats (total_focus_time+) │
+│        │                                                            │
+│        └─ pet_engine::on_focus_completed(&conn)  ← 同步直接调用     │
+│                  ├─ apply_xp(+20) ─► level up?                      │
+│                  ├─ energy += 10 (clamp 0..100)                     │
+│                  ├─ infer_mood(...)                                 │
+│                  ├─ UPDATE pet_state                                │
+│                  └─ INSERT pet_interaction_logs                     │
+│                      (action='focus_completed')                     │
+└─────────────────────────────────────────────────────────────────────┘
+
+
+┌─────────────── BackgroundScheduler 周期任务 ────────────────────────┐
+│ start_scheduler(app) 注入两条 tokio 协程：                          │
+│   ① 每小时  → pet_engine::decay(&conn, 1.0)                         │
+│               └─ hunger ×0.95 / energy ×0.97 / 重算 mood           │
+│   ② 每分钟  → 检测本地时钟 == "23:00" → run_daily_summary           │
+│               └─ 触发后睡眠 1 小时避免重复                          │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 设计约束
+
+1. **无状态函数 + 共享连接**：引擎函数均以 `&Connection` 入参，不持有自身状态；连接由 `app.state::<std::sync::Mutex<rusqlite::Connection>>` 单例托管，调度器与命令层各自取锁。
+2. **事件 best-effort**：`publish` 忽略无订阅者错误；`pet_engine::on_focus_completed` 在 `complete_focus_session` 内同步调用且 best-effort 忽略未初始化错误，保证专注完成主流程不被宠物侧异常阻断。
+3. **scheduler TODO**：当前 `scheduler.rs` 尚未订阅 EventBus 事件，`daily_stats` 仅在显式 Tauri 命令调用 `on_task_completed / on_focus_completed` 时更新（见 `scheduler.rs` 顶部 TODO 注释，留待 Task 14/15 后续接入）。

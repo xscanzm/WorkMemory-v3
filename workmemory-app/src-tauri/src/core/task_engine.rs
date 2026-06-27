@@ -75,13 +75,45 @@ pub fn save_task(conn: &Connection, mut task: Task) -> AppResult<Task> {
 }
 
 /// 查询所有任务（按 sort_order, created_at 排序）
-pub fn get_all_tasks(conn: &Connection) -> AppResult<Vec<Task>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, title, description, status, priority, due_date, mood_tag,
-                recurrence_rule, is_pinned, sort_order, subtasks, category, tags, created_at, updated_at
-         FROM tasks ORDER BY sort_order ASC, created_at DESC"
-    )?;
-    let tasks = stmt.query_map([], row_to_task)?.filter_map(|r| r.ok()).collect();
+///
+/// Task 22.3：新增 `limit` / `offset` 可选分页参数。
+/// - 两者均 `Some` 时附加 `LIMIT ?1 OFFSET ?2` 子句（分页查询首页/下一页）。
+/// - 任一为 `None` 时回退到全量查询（保留对内部批处理调用方的兼容）。
+/// 前端 IPC 命令 `get_all_tasks` 默认以 `limit=100, offset=0` 调用本函数。
+pub fn get_all_tasks(
+    conn: &Connection,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> AppResult<Vec<Task>> {
+    let tasks = match (limit, offset) {
+        (Some(l), Some(o)) => {
+            let mut stmt = conn.prepare(
+                "SELECT id, title, description, status, priority, due_date, mood_tag,
+                        recurrence_rule, is_pinned, sort_order, subtasks, category, tags, created_at, updated_at
+                 FROM tasks ORDER BY sort_order ASC, created_at DESC
+                 LIMIT ?1 OFFSET ?2",
+            )?;
+            // 先 collect 到局部变量再作为块尾返回，避免 `stmt` 仍在借用中被 drop（E0597 块尾临时变量顺序问题）
+            let rows: Vec<Task> = stmt
+                .query_map(rusqlite::params![l, o], row_to_task)?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        }
+        _ => {
+            let mut stmt = conn.prepare(
+                "SELECT id, title, description, status, priority, due_date, mood_tag,
+                        recurrence_rule, is_pinned, sort_order, subtasks, category, tags, created_at, updated_at
+                 FROM tasks ORDER BY sort_order ASC, created_at DESC",
+            )?;
+            // 同上：collect 到局部变量再返回，规避块尾临时变量借用问题（E0597）
+            let rows: Vec<Task> = stmt
+                .query_map([], row_to_task)?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        }
+    };
     Ok(tasks)
 }
 
@@ -128,6 +160,17 @@ pub fn update_task(conn: &Connection, task: &Task) -> AppResult<()> {
     if affected == 0 {
         return Err(AppError::not_found(format!("任务不存在: {}", task.id)));
     }
+
+    // 衍生计算接入（Task 29.1）：仅当 status 由非 completed 流转为 completed 时触发，
+    // 避免对 completed 任务的幂等 re-save 重复计数。
+    // 使用全限定 crate::core:: 路径，规避 commands.rs 中裸模块路径解析问题。
+    // 注意：此处采用顺序 `?` 传播——若 pet_engine 失败（如 pet_state 未初始化），
+    // analytics_engine 不会执行。权衡：简单优先；调用方可在命令层用 best-effort 容错。
+    if task.status == "completed" && current != "completed" {
+        crate::core::pet_engine::on_task_completed(conn)?;
+        crate::core::analytics_engine::on_task_completed(conn)?;
+    }
+
     Ok(())
 }
 

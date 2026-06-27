@@ -1,25 +1,58 @@
 /**
  * 设置视图 (SettingsView) - 04_UI_SPEC.md §5.6 + 01_ARCHITECTURAL_DECISIONS.md
  *
- * - 通用设置分组（卡片）：OpenAI Key / Base URL / Model / 保留天数 / 截图开关 /
- *   向量检索 / Mascot 透明度 / Mascot 活跃频率
- * - 伙伴 (Companion) 分组：9 张形象缩略图 3×3，点击即时写入无需保存
- * - 隐私规则管理：简单新增/删除（本地态）
- * - 初始加载 getSettings / getMascotId
+ * Task 24 重组为清晰分区：
+ *   1. 主题 (Theme)        - 浅色 / 深色 / 高对比度，data-theme 属性 + localStorage 持久化
+ *   2. 语言 (Language)     - zh-CN / en-US
+ *   3. 音景 (Soundscape)   - 启用 / 禁用单个音景包
+ *   4. 通知 (Notifications) - 应用内 Toast（常驻）+ 系统通知开关
+ *   5. 通用设置 (General)   - OpenAI Key / Base URL / Model / 保留天数 / 截图 / 向量检索 / Mascot
+ *   6. 伙伴 (Companion)    - 9 张形象缩略图
+ *   7. 隐私规则 (Privacy)   - 敏感词 / 应用黑名单 / URL 过滤（本地管理）
+ *   8. 数据管理 (Data)      - 导出 JSON / CSV、导入 JSON、清空全部（ConfirmDialog 二次确认）
+ *   9. 关于 (About)        - 版本 + 文档 / 反馈链接
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as Switch from '@radix-ui/react-switch';
 import * as Slider from '@radix-ui/react-slider';
 import * as Select from '@radix-ui/react-select';
 import * as ScrollArea from '@radix-ui/react-scroll-area';
-import { Check, ChevronDown, Trash2, Plus, Save } from 'lucide-react';
+import {
+  Check,
+  ChevronDown,
+  Trash2,
+  Plus,
+  Save,
+  Download,
+  Upload,
+  Sun,
+  Moon,
+  Contrast,
+  ExternalLink,
+  AlertTriangle,
+} from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { api } from '@/src-tauri/api';
+import type { SoundscapePack } from '@/src-tauri/api';
 import type { AppSetting, PrivacyRule } from '@/types';
 import MascotSprite from '@/components/mascot/MascotSprite';
+import { useI18n } from '@/i18n';
+import type { Locale } from '@/i18n/types';
+import { toast } from '@/store/toastStore';
+import { useTaskStore } from '@/store/taskStore';
+import { usePetStore } from '@/store/petStore';
+import { downloadText, timestampForFilename } from '@/utils/download';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import { reopenOnboarding } from '@/components/OnboardingWizard';
 
 /** 扩展 AppSetting，容纳 openai_api_key（KV 扩展字段，AppSetting 类型未含） */
 type AppSettingExt = AppSetting & { openai_api_key?: string };
+
+type Theme = 'light' | 'dark' | 'high-contrast';
+
+const THEME_STORAGE_KEY = 'workmemory.theme';
+const SYS_NOTIF_PREF_KEY = 'system_notifications_enabled';
+const APP_VERSION = '3.0.0';
 
 const DEFAULT_SETTINGS: AppSettingExt = {
   saveScreenshots: true,
@@ -59,10 +92,17 @@ const FREQUENCY_OPTIONS = [
   { value: 'off', label: '关闭' },
 ];
 
+const THEME_OPTIONS: Array<{ value: Theme; icon: typeof Sun; labelKey: string }> = [
+  { value: 'light', icon: Sun, labelKey: 'settings.theme.light' },
+  { value: 'dark', icon: Moon, labelKey: 'settings.theme.dark' },
+  { value: 'high-contrast', icon: Contrast, labelKey: 'settings.theme.high-contrast' },
+];
+
 export default function SettingsView(): JSX.Element {
   const setStoreSettings = useAppStore((s) => s.setSettings);
   const setStoreMascotId = useAppStore((s) => s.setMascotId);
   const storeMascotId = useAppStore((s) => s.mascotId);
+  const { locale, setLocale, t } = useI18n();
 
   const [form, setForm] = useState<AppSettingExt>(DEFAULT_SETTINGS);
   const [mascotId, setMascotId] = useState<number>(storeMascotId);
@@ -74,16 +114,45 @@ export default function SettingsView(): JSX.Element {
   const [ruleType, setRuleType] = useState<PrivacyRule['ruleType']>('app');
   const [rulePattern, setRulePattern] = useState('');
 
+  // Task 24: 主题 / 音景 / 通知 / 数据管理 状态
+  const [theme, setTheme] = useState<Theme>(() => {
+    if (typeof window === 'undefined') return 'light';
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+    return stored === 'dark' || stored === 'high-contrast' ? stored : 'light';
+  });
+  const [soundscapePacks, setSoundscapePacks] = useState<SoundscapePack[]>([]);
+  const [systemNotificationsEnabled, setSystemNotificationsEnabled] = useState(false);
+  const [dataBusy, setDataBusy] = useState(false);
+  const [clearDialogOpen, setClearDialogOpen] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // 主题：变更即应用 + 持久化
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // 忽略配额 / 隐私模式写入失败
+    }
+  }, [theme]);
+
   // 初始加载
   useEffect(() => {
     let cancelled = false;
-    Promise.all([api.getSettings(), api.getMascotId()])
-      .then(([s, mid]) => {
+    Promise.all([
+      api.getSettings(),
+      api.getMascotId(),
+      api.getAllSoundscapePacks(),
+      api.getPreference(SYS_NOTIF_PREF_KEY),
+    ])
+      .then(([s, mid, packs, sysNotifPref]) => {
         if (cancelled) return;
         setForm({ ...DEFAULT_SETTINGS, ...(s as AppSettingExt) });
         setMascotId(mid);
         setStoreSettings(s);
         setStoreMascotId(mid);
+        setSoundscapePacks(packs);
+        setSystemNotificationsEnabled(sysNotifPref === 'true');
       })
       .catch((err) => {
         // eslint-disable-next-line no-console
@@ -146,6 +215,123 @@ export default function SettingsView(): JSX.Element {
   const removeRule = (id: string) =>
     setRules((prev) => prev.filter((r) => r.id !== id));
 
+  // ===== Task 24: 音景 / 通知 / 数据管理 handlers =====
+
+  const handleTogglePack = async (id: string, enabled: boolean) => {
+    // 乐观更新
+    setSoundscapePacks((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, enabled } : p)),
+    );
+    try {
+      await api.toggleSoundscapePack(id, enabled);
+    } catch (err) {
+      // 回滚
+      setSoundscapePacks((prev) =>
+        prev.map((p) => (p.id === id ? { ...p, enabled: !enabled } : p)),
+      );
+      // eslint-disable-next-line no-console
+      console.error('[SettingsView] toggleSoundscapePack 失败', err);
+      toast.error(t('settings.soundscape.toggle.failed'));
+    }
+  };
+
+  const handleToggleSystemNotif = async (enabled: boolean) => {
+    setSystemNotificationsEnabled(enabled);
+    try {
+      await api.setPreference(SYS_NOTIF_PREF_KEY, String(enabled));
+    } catch (err) {
+      setSystemNotificationsEnabled(!enabled);
+      // eslint-disable-next-line no-console
+      console.error('[SettingsView] setPreference(system_notifications_enabled) 失败', err);
+    }
+  };
+
+  const handleExportJson = async () => {
+    setDataBusy(true);
+    try {
+      const json = await api.exportDataJson();
+      downloadText(
+        `workmemory-export-${timestampForFilename()}.json`,
+        json,
+        'application/json',
+      );
+      toast.success(t('settings.data.export.success'));
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[SettingsView] exportDataJson 失败', err);
+      toast.error(t('settings.data.export.failed'));
+    } finally {
+      setDataBusy(false);
+    }
+  };
+
+  const handleExportCsv = async () => {
+    setDataBusy(true);
+    try {
+      const csv = await api.exportTasksCsv();
+      downloadText(
+        `workmemory-tasks-${timestampForFilename()}.csv`,
+        csv,
+        'text/csv;charset=utf-8',
+      );
+      toast.success(t('settings.data.export.success'));
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[SettingsView] exportTasksCsv 失败', err);
+      toast.error(t('settings.data.export.failed'));
+    } finally {
+      setDataBusy(false);
+    }
+  };
+
+  const handleImportClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setDataBusy(true);
+    try {
+      const text = await file.text();
+      const summary = await api.importDataJson(text);
+      toast.success(t('settings.data.import.success', { total: summary.total }));
+      // 导入后重新加载核心 store，确保 UI 与新数据一致
+      await Promise.all([
+        useTaskStore.getState().loadTasks(),
+        usePetStore.getState().loadPetState(),
+      ]);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[SettingsView] importDataJson 失败', err);
+      toast.error(t('settings.data.import.failed'));
+    } finally {
+      setDataBusy(false);
+      // 重置 input，允许再次选择同一文件
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleClearConfirm = async () => {
+    setClearDialogOpen(false);
+    setDataBusy(true);
+    try {
+      await api.clearAllData();
+      toast.success(t('settings.data.clear.success'));
+      // 清空后重新加载核心 store（将得到空状态）
+      await Promise.all([
+        useTaskStore.getState().loadTasks(),
+        usePetStore.getState().loadPetState(),
+      ]);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[SettingsView] clearAllData 失败', err);
+      toast.error(t('settings.data.clear.failed'));
+    } finally {
+      setDataBusy(false);
+    }
+  };
+
   if (loading) {
     return (
       <div style={{ padding: 'var(--space-xl)' }}>
@@ -172,7 +358,134 @@ export default function SettingsView(): JSX.Element {
             maxWidth: 760,
           }}
         >
-          {/* 通用设置 */}
+          {/* 1. 主题 / Theme */}
+          <Card title={t('settings.theme')} subtitle={t('settings.theme.hint')}>
+            <div style={{ display: 'inline-flex', gap: 8, flexWrap: 'wrap' }}>
+              {THEME_OPTIONS.map((opt) => {
+                const selected = opt.value === theme;
+                const Icon = opt.icon;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setTheme(opt.value)}
+                    aria-pressed={selected}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      padding: '6px 14px',
+                      fontSize: 13,
+                      fontWeight: 600,
+                      border: selected
+                        ? '1px solid var(--color-primary)'
+                        : '1px solid var(--color-border)',
+                      borderRadius: 'var(--radius-md)',
+                      background: selected
+                        ? 'var(--color-primary-soft)'
+                        : 'var(--color-surface)',
+                      color: selected
+                        ? 'var(--color-primary)'
+                        : 'var(--color-text-main)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <Icon size={14} />
+                    {t(opt.labelKey)}
+                  </button>
+                );
+              })}
+            </div>
+          </Card>
+
+          {/* 2. 语言 / Language */}
+          <Card title={t('settings.language')} subtitle="Language / 语言">
+            <Field label={t('settings.language')}>
+              <div
+                style={{
+                  display: 'inline-flex',
+                  gap: 8,
+                  flexShrink: 0,
+                }}
+              >
+                {(['zh-CN', 'en-US'] as Locale[]).map((l) => {
+                  const selected = l === locale;
+                  return (
+                    <button
+                      key={l}
+                      type="button"
+                      onClick={() => setLocale(l)}
+                      style={{
+                        padding: '6px 14px',
+                        fontSize: 13,
+                        fontWeight: 600,
+                        border: selected
+                          ? '1px solid var(--color-primary)'
+                          : '1px solid var(--color-border)',
+                        borderRadius: 'var(--radius-md)',
+                        background: selected
+                          ? 'var(--color-primary-soft)'
+                          : 'var(--color-surface)',
+                        color: selected
+                          ? 'var(--color-primary)'
+                          : 'var(--color-text-main)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {l === 'zh-CN' ? t('settings.language.zh') : t('settings.language.en')}
+                    </button>
+                  );
+                })}
+              </div>
+            </Field>
+          </Card>
+
+          {/* 3. 音景 / Soundscape */}
+          <Card title={t('settings.soundscape')} subtitle={t('settings.soundscape.hint')}>
+            {soundscapePacks.length === 0 ? (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: 'var(--color-text-light)',
+                  padding: 'var(--space-sm) 0',
+                }}
+              >
+                {t('settings.soundscape.empty')}
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-sm)' }}>
+                {soundscapePacks.map((p) => (
+                  <Field key={p.id} label={p.name} hint={p.description}>
+                    <SwitchRow
+                      checked={p.enabled}
+                      onChange={(v) => handleTogglePack(p.id, v)}
+                    />
+                  </Field>
+                ))}
+              </div>
+            )}
+          </Card>
+
+          {/* 4. 通知 / Notifications */}
+          <Card title={t('settings.notifications')}>
+            <Field
+              label={t('settings.notifications.in-app')}
+              hint={t('settings.notifications.system.hint')}
+            >
+              <SwitchRow checked onChange={() => {}} />
+            </Field>
+            <Field
+              label={t('settings.notifications.system')}
+              hint={t('settings.notifications.system.hint')}
+            >
+              <SwitchRow
+                checked={systemNotificationsEnabled}
+                onChange={handleToggleSystemNotif}
+              />
+            </Field>
+          </Card>
+
+          {/* 5. 通用设置 */}
           <Card title="通用设置" subtitle="OpenAI 与本地存储">
             <Field label="OpenAI API Key" hint="存储于本地 settings.openai_api_key">
               <input
@@ -286,7 +599,7 @@ export default function SettingsView(): JSX.Element {
             </div>
           </Card>
 
-          {/* 伙伴选择 */}
+          {/* 6. 伙伴选择 */}
           <Card title="伙伴 (Companion)" subtitle="点击即时切换，无需保存">
             <div
               style={{
@@ -357,7 +670,20 @@ export default function SettingsView(): JSX.Element {
             </div>
           </Card>
 
-          {/* 隐私规则 */}
+          {/* 6.1 引导回放 / Onboarding replay */}
+          <Card title={t('settings.onboarding')} subtitle={t('settings.onboarding.hint')}>
+            <Field label={t('settings.onboarding.replay')} hint={t('settings.onboarding.replay.hint')}>
+              <button
+                type="button"
+                onClick={() => reopenOnboarding()}
+                style={dataBtnStyle}
+              >
+                {t('settings.onboarding.replay')}
+              </button>
+            </Field>
+          </Card>
+
+          {/* 7. 隐私规则 */}
           <Card title="隐私规则" subtitle="敏感词 / 应用黑名单 / URL 过滤（本地管理）">
             <div style={{ display: 'flex', gap: 'var(--space-sm)', marginBottom: 'var(--space-md)' }}>
               <StyledSelect
@@ -454,6 +780,120 @@ export default function SettingsView(): JSX.Element {
               </div>
             )}
           </Card>
+
+          {/* 8. 数据管理 / Data Management */}
+          <Card
+            title={t('settings.data-management')}
+            subtitle={t('settings.data-management.hint')}
+          >
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 'var(--space-sm)',
+              }}
+            >
+              <button
+                type="button"
+                onClick={handleExportJson}
+                disabled={dataBusy}
+                style={dataBtnStyle}
+              >
+                <Download size={14} />
+                {t('settings.data.export-json')}
+              </button>
+              <button
+                type="button"
+                onClick={handleExportCsv}
+                disabled={dataBusy}
+                style={dataBtnStyle}
+              >
+                <Download size={14} />
+                {t('settings.data.export-csv')}
+              </button>
+              <button
+                type="button"
+                onClick={handleImportClick}
+                disabled={dataBusy}
+                style={dataBtnStyle}
+              >
+                <Upload size={14} />
+                {t('settings.data.import-json')}
+              </button>
+              <button
+                type="button"
+                onClick={() => setClearDialogOpen(true)}
+                disabled={dataBusy}
+                style={{
+                  ...dataBtnStyle,
+                  color: 'var(--color-danger)',
+                  borderColor: 'var(--color-danger)',
+                }}
+              >
+                <AlertTriangle size={14} />
+                {t('settings.data.clear-all')}
+              </button>
+            </div>
+            {/* 隐藏的文件选择器：导入 JSON */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json,application/json"
+              onChange={handleFileChange}
+              style={{ display: 'none' }}
+            />
+          </Card>
+
+          {/* 9. 关于 / About */}
+          <Card title={t('settings.about')}>
+            <Field label={t('settings.about.version')}>
+              <span
+                style={{
+                  fontSize: 13,
+                  color: 'var(--color-text-muted)',
+                  fontFamily: 'var(--font-mono)',
+                }}
+              >
+                v{APP_VERSION}
+              </span>
+            </Field>
+            <Field label={t('settings.about.docs')}>
+              <a
+                href={t('settings.about.docs.url')}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  fontSize: 13,
+                  color: 'var(--color-primary)',
+                  textDecoration: 'none',
+                }}
+              >
+                <ExternalLink size={13} />
+                {t('settings.about.docs.url')}
+              </a>
+            </Field>
+            <Field label={t('settings.about.feedback')}>
+              <a
+                href={t('settings.about.feedback.url')}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  fontSize: 13,
+                  color: 'var(--color-primary)',
+                  textDecoration: 'none',
+                }}
+              >
+                <ExternalLink size={13} />
+                {t('settings.about.feedback')}
+              </a>
+            </Field>
+          </Card>
         </div>
       </ScrollArea.Viewport>
       <ScrollArea.Scrollbar
@@ -463,6 +903,16 @@ export default function SettingsView(): JSX.Element {
         <ScrollArea.Thumb style={{ background: 'var(--color-scrollbar-thumb)', borderRadius: 'var(--radius-sm)' }} />
       </ScrollArea.Scrollbar>
       <ScrollArea.Corner />
+
+      {/* 清空全部数据二次确认 */}
+      <ConfirmDialog
+        open={clearDialogOpen}
+        title={t('settings.data.clear.confirm.title')}
+        message={t('settings.data.clear.confirm.message')}
+        danger
+        onConfirm={handleClearConfirm}
+        onCancel={() => setClearDialogOpen(false)}
+      />
     </ScrollArea.Root>
   );
 }
@@ -550,6 +1000,22 @@ const inputStyle: React.CSSProperties = {
   outline: 'none',
   width: '100%',
   maxWidth: 320,
+};
+
+const dataBtnStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
+  height: 32,
+  padding: '0 14px',
+  fontSize: 13,
+  fontWeight: 500,
+  border: '1px solid var(--color-border)',
+  borderRadius: 'var(--radius-md)',
+  background: 'var(--color-surface)',
+  color: 'var(--color-text-main)',
+  cursor: 'pointer',
+  flexShrink: 0,
 };
 
 /* ===== Radix Switch 封装 ===== */

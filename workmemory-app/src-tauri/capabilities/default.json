@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capabilities granted to all app windows. Custom commands defined via #[tauri::command] are accessible without explicit capabilities; this file grants additional plugin (notification) permissions required by Task 24.4.",
+  "windows": ["main", "mascot"],
+  "permissions": [
+    "core:default",
+    "notification:default",
+    "notification:allow-notify",
+    "notification:allow-is-permission-granted",
+    "notification:allow-request-permission",
+    "shell:allow-open"
+  ]
+}

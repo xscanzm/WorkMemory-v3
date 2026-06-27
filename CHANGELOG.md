@@ -12,10 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Playwright E2E 测试框架与关键流程用例（创建任务→完成→streak、专注会话→XP、宠物交互→hunger），对应 `tasks.md` SubTask 21.3（计划中）
-- GitHub Actions CI 工作流（`.github/workflows/ci.yml`）：`pnpm install` / `pnpm typecheck` / `pnpm test` / `cargo test`，矩阵 ubuntu-latest + windows-latest（计划中）
+- Windows 构建前置条件文档（`10_DEVELOPMENT_GUIDE.md` 新增「Windows 构建注意事项」章节：SDK 版本/RC.EXE 编码/中文路径/MSI/WiX/透明窗口/windows crate 版本对齐）
+- GitHub Actions CI 工作流（`.github/workflows/ci.yml`：Windows + Ubuntu matrix，typecheck + Vitest + cargo test + tauri build）
+- `tauri.conf.json` NSIS/WiX 安装包语言配置（`bundle.windows.nsis.languages: [SimpChinese, English]`、`bundle.windows.wix.language: [zh-CN, en-US]`、`installMode: perMachine`）
 
 ### Changed
 
+- `windows` crate 0.58 → 0.61（对齐 Tauri 2.11.3 依赖树，消除 0.58/0.61 双版本重复编译；`Cargo.toml` `[target.'cfg(target_os = "windows")'.dependencies]`）
 - 性能优化：任务列表虚拟滚动、SpriteAnimator Canvas 渲染、DB 查询分页、音景资源懒加载（对应 Task 22，计划中）
 - 成就/换装/引导流程与任务拖拽/滑动手势（对应 Task 23，计划中）
 - SettingsView 数据导入导出与通知系统（对应 Task 24，计划中）

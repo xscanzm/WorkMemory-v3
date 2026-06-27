@@ -32,8 +32,9 @@ log = "0.4"
 env_logger = "0.11"
 
 # Windows 专属依赖：WinRT OCR 与窗口控制
+# 版本对齐 Tauri 2.11 依赖树（tauri 2.11.3 → windows 0.61.3），避免 0.58/0.61 双版本重复编译
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.58", features = [
+windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",

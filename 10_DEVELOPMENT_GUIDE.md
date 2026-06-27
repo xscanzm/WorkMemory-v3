@@ -460,6 +460,143 @@ Vitest 配置（`vitest.config.ts`）通过 `setupFiles: ['./src/test/setup.ts']
 
 ---
 
+## Windows 构建注意事项
+
+本节汇总在 Windows 上构建 WorkMemory-v3（Tauri 2.x）时的前置条件与已知坑点。Linux/macOS 开发者可跳过本节。若你仅通过 GitHub Actions 的 `windows-latest` runner 构建，绝大多数问题已被 runner 环境规避（见各小节说明）。
+
+### 1. Windows SDK 版本要求
+
+构建要求 **Windows SDK ≥ 10.0.22000**（Windows 11 SDK，或 Windows 10 SDK 10.0.22000+），以获得 `RC.EXE` 对 UTF-8 + codepage 65001 的可靠支持。
+
+`tauri-build` 在 Windows 目标上会**内部生成临时 `.rc` 资源文件**，该文件嵌入以下内容并调用 `rc.exe` 编译为 `.res` 链接进可执行文件：
+
+- `icons/icon.ico`（应用图标）
+- 应用 manifest（DPI awareness、UTF-8 codepage 等）
+- 版本信息（`FileVersion`/`ProductVersion`/`FileDescription` 等，源自 `tauri.conf.json`）
+
+```powershell
+# 查看已安装的 Windows SDK
+Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Platforms\UAP" -Directory
+# 检索 rc.exe 路径
+Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\rc.exe"
+```
+
+### 2. RC.EXE 中文路径/编码问题
+
+`tauri.conf.json` 中存在 **4 处中文字符串**，它们会流入 `tauri-build` 生成的 `.rc` 文件：
+
+| 字段 | 当前值 |
+|------|--------|
+| `app.windows[0].title` | `"WorkMemory 今日记忆"` |
+| 托盘 `tooltip` | 含中文 |
+| `bundle.shortDescription` | 含中文 |
+| `bundle.longDescription` | 含中文 |
+
+当 SDK 较旧或系统 ACP 非 UTF-8 时，`rc.exe` 处理这些中文字符串会失败。常见症状：
+
+- `error RC2104: <file>: undefined keyword or key name: <乱码>`
+- `error RC2188: <file>: invalid character in file`，或无法打开含非 ASCII 路径的 `.rc`
+- 构建看似成功，但嵌入的版本信息（右键 `.exe` → 属性 → 详细信息）出现乱码
+
+### 3. 系统区域设置缓解
+
+若无法升级 SDK 至 10.0.22000+，可通过切换系统 ANSI codepage（ACP）为 UTF-8 来缓解：
+
+1. 打开「**设置 → 时间和语言 → 语言和区域**」
+2. 点击「**管理语言设置**」（或「相关设置 → 管理语言设置」）
+3. 切换到「**更改系统区域设置**」
+4. 勾选「**Beta: 使用 Unicode UTF-8 提供全球语言支持**」
+5. 重启系统
+
+此操作将系统 ACP 从 936（GBK）切换为 65001（UTF-8），使 `rc.exe` 能正确解析含中文的 `.rc` 文件。
+
+> ⚠️ 该选项为 Beta，可能影响少数依赖 GBK 编码的旧软件。仅推荐在开发机上启用；CI runner 通常已具备等价环境。
+
+### 4. 构建路径要求
+
+**避免在含中文的用户目录下构建**，例如 `C:\Users\张三\workmemory-app\`。原因：`tauri-build` 生成的临时 `.rc` 文件路径会传递给 `rc.exe`，当路径含非 ASCII 字符且系统 ACP=936（GBK）时，`rc.exe` 可能无法打开该文件，报 `error RC2188` 或类似错误。
+
+推荐使用纯 ASCII 路径：
+
+```
+C:\dev\workmemory-app\
+# 或
+C:\Users\<英文名>\code\workmemory-app\
+```
+
+> GitHub Actions 的 `windows-latest` runner 检出路径为 `D:\a\workmemory-app\workmemory-app\`，天然为 ASCII，无需额外处理。
+
+### 5. MSI 打包
+
+`tauri.conf.json` 中 `bundle.targets: "all"` 在 Windows 上会同时产出三种包：
+
+- **NSIS**（`.exe` 安装包）
+- **MSI**（`.msi` 安装包）
+- **portable**（免安装版）
+
+MSI 打包依赖 [WiX Toolset 3.x](https://wixtoolset.org/)，需**手动安装**并加入 `PATH`，Tauri 不会自动安装。若未安装 WiX，构建 MSI 阶段会报错。
+
+```powershell
+# 验证 WiX 是否可用
+light --version   # WiX linker
+candle --version  # WiX compiler
+```
+
+若仅需 NSIS 安装包，可跳过 MSI 以避免 WiX 依赖：
+
+```bash
+pnpm tauri:build -- --bundles nsis
+```
+
+> 当前 `tauri.conf.json` 已配置 `bundle.windows.nsis.languages: ["SimpChinese", "English"]` 与 `bundle.windows.wix.language: ["zh-CN", "en-US"]`，安装界面支持中英双语。
+
+### 6. 透明窗口已知问题
+
+mascot（桌面宠物）窗口在 `tauri.conf.json` 中配置为：
+
+```json
+{
+  "transparent": true,
+  "decorations": false,
+  "alwaysOnTop": true
+}
+```
+
+在 Windows 上，Tauri 通过 `DwmExtendFrameIntoClientArea` + WebView2 合成路径实现透明无边框置顶窗口。**部分 Windows 版本与 GPU 驱动组合下可能出现黑底或闪烁**。排查方向：
+
+- **(a)** 更新显卡驱动到最新版本（NVIDIA/AMD/Intel 官网）；
+- **(b)** 在 `tauri.conf.json` 临时将 `"transparent"` 改为 `false`，验证是否为合成层问题（若黑底消失则为合成问题）；
+- **(c)** 检查 WebView2 运行时版本 ≥ 99.0.1150.0：
+
+```powershell
+# 查看 WebView2 运行时版本
+Get-ItemProperty "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" -Name "pv" -ErrorAction SilentlyContinue
+```
+
+### 7. windows crate 版本对齐
+
+本项目 `Cargo.toml` 在 Windows target 下直接依赖 `windows` crate：
+
+```toml
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    # ... 完整列表见 src-tauri/Cargo.toml（含 WinRT OCR / Accessibility 等）
+] }
+```
+
+Tauri 2.11.x 内部依赖 `windows 0.61.3`。本项目锁定 `windows = "0.61"` 与 Tauri 依赖树**对齐**，避免 0.58/0.61 双版本重复编译（双版本会显著增加编译时间与产物体积）。
+
+> 若未来 Tauri 升级到依赖 `windows 0.6x`（如 0.62/0.63），应**同步升级**本项目的 `windows` 版本以维持单一版本。可用以下命令检查实际解析的版本：
+
+```bash
+cargo tree --manifest-path src-tauri/Cargo.toml -i windows
+```
+
+---
+
 ## 7. 贡献流程
 
 ### 7.1 分支策略

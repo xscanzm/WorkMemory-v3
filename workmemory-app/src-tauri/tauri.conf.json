@@ -76,7 +76,17 @@
     ],
     "category": "Productivity",
     "shortDescription": "本地优先的个人工作记忆伙伴",
-    "longDescription": "WorkMemory 在后台安静低打扰地整理你每天的屏幕碎片，沉淀为可复看、可检索、可串联、可沉淀的个人知识系统。"
+    "longDescription": "WorkMemory 在后台安静低打扰地整理你每天的屏幕碎片，沉淀为可复看、可检索、可串联、可沉淀的个人知识系统。",
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "installMode": "perMachine",
+        "languages": ["SimpChinese", "English"]
+      },
+      "wix": {
+        "language": ["zh-CN", "en-US"]
+      }
+    }
   },
   "plugins": {
     "global-shortcut": {

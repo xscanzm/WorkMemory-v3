@@ -34,6 +34,56 @@ const STABLE_THRESHOLD_SECS: u64 = 3;
 /// pHash 相似度阈值：>= 该值触发 Merge
 const PHASH_MERGE_SIMILARITY: f64 = 0.95;
 
+/// 进程名 → activity_type 静态映射表（按小写匹配）
+const ACTIVITY_TYPE_MAP: &[(&str, &str)] = &[
+    ("code.exe", "coding"),
+    ("code-insiders.exe", "coding"),
+    ("devenv.exe", "coding"),
+    ("idea64.exe", "coding"),
+    ("idea.exe", "coding"),
+    ("pycharm64.exe", "coding"),
+    ("pycharm.exe", "coding"),
+    ("webstorm64.exe", "coding"),
+    ("webstorm.exe", "coding"),
+    ("goland64.exe", "coding"),
+    ("goland.exe", "coding"),
+    ("clion64.exe", "coding"),
+    ("clion.exe", "coding"),
+    ("rust-rover.exe", "coding"),
+    ("rider64.exe", "coding"),
+    ("rider.exe", "coding"),
+    ("fleet.exe", "coding"),
+    ("msedge.exe", "browsing"),
+    ("chrome.exe", "browsing"),
+    ("firefox.exe", "browsing"),
+    ("wechat.exe", "communication"),
+    ("feishu.exe", "communication"),
+    ("dingtalk.exe", "communication"),
+    ("slack.exe", "communication"),
+    ("wechatwork.exe", "communication"),
+    ("excel.exe", "spreadsheet"),
+    ("winword.exe", "document"),
+    ("powerpnt.exe", "document"),
+    ("notion.exe", "document"),
+    ("obsidian.exe", "document"),
+    ("terminal.exe", "terminal"),
+    ("windowsterminal.exe", "terminal"),
+    ("pwsh.exe", "terminal"),
+    ("powershell.exe", "terminal"),
+    ("cmd.exe", "terminal"),
+];
+
+/// 按进程名查找 activity_type，未命中返回 "other"
+fn lookup_activity_type(process_name: &str) -> &'static str {
+    let lower = process_name.to_lowercase();
+    for &(proc, activity) in ACTIVITY_TYPE_MAP {
+        if proc == lower {
+            return activity;
+        }
+    }
+    "other"
+}
+
 // ============================================================
 // 公共类型
 // ============================================================
@@ -60,6 +110,8 @@ pub struct ForegroundInfo {
     pub window_title: String,
     /// 应用友好名（去掉 `.exe` 后缀）
     pub app_name: String,
+    /// 浏览器地址栏 URL（仅浏览器白名单进程通过 UIA 读取；非浏览器/读取失败为 None）
+    pub browser_url: Option<String>,
 }
 
 /// 截图捕获结果（RGBA8 像素 + 尺寸）
@@ -162,6 +214,7 @@ fn insert_segment(
     let time_str = now.format("%H:%M:%S").to_string();
     let created_at = now.format("%+").to_string();
 
+    let activity_type = lookup_activity_type(&fg.process_name);
     let _ = with_db(app, |conn| {
         conn.execute(
             "INSERT INTO segments
@@ -169,7 +222,7 @@ fn insert_segment(
                  window_title, ocr_text, ocr_status, image_hash, screenshot_path,
                  is_important, is_private, is_deleted, capture_source, browser_url,
                  activity_type, created_at)
-             VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7, '', 'pending', ?8, '', 0, 0, 0, ?9, NULL, NULL, ?10)",
+             VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7, '', 'pending', ?8, '', 0, 0, 0, ?9, ?12, ?10, ?11)",
             rusqlite::params![
                 id,
                 date,
@@ -180,7 +233,9 @@ fn insert_segment(
                 fg.window_title,
                 image_hash,
                 capture_source,
+                activity_type,
                 created_at,
+                fg.browser_url.as_deref(),
             ],
         )
     });
@@ -194,6 +249,7 @@ fn insert_private_segment(app: &tauri::AppHandle, fg: &ForegroundInfo) -> String
     let date = now.format("%Y-%m-%d").to_string();
     let time_str = now.format("%H:%M:%S").to_string();
     let created_at = now.format("%+").to_string();
+    let activity_type = lookup_activity_type(&fg.process_name);
 
     let _ = with_db(app, |conn| {
         conn.execute(
@@ -202,7 +258,7 @@ fn insert_private_segment(app: &tauri::AppHandle, fg: &ForegroundInfo) -> String
                  window_title, ocr_text, ocr_status, image_hash, screenshot_path,
                  is_important, is_private, is_deleted, capture_source, browser_url,
                  activity_type, created_at)
-             VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7, '', 'skipped', '', '', 0, 1, 0, 'auto', NULL, NULL, ?8)",
+             VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7, '', 'skipped', '', '', 0, 1, 0, 'auto', ?10, ?8, ?9)",
             rusqlite::params![
                 id,
                 date,
@@ -211,7 +267,9 @@ fn insert_private_segment(app: &tauri::AppHandle, fg: &ForegroundInfo) -> String
                 fg.app_name,
                 fg.process_name,
                 fg.window_title,
+                activity_type,
                 created_at,
+                fg.browser_url.as_deref(),
             ],
         )
     });
@@ -402,7 +460,7 @@ pub async fn start_polling(app: tauri::AppHandle) {
 
         // 3. 隐私守卫
         let is_private = with_db(&app, |conn| {
-            matches_privacy_rules(conn, &fg.process_name, &fg.window_title, None)
+            matches_privacy_rules(conn, &fg.process_name, &fg.window_title, fg.browser_url.as_deref())
         })
         .unwrap_or(false);
 
@@ -568,11 +626,13 @@ fn get_last_input_time() -> u64 {
 #[cfg(target_os = "windows")]
 fn get_foreground_window() -> Option<ForegroundInfo> {
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
+        EnumChildWindows, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
+        WNDENUMPROC,
     };
     use windows::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
     };
+    use windows::Win32::Foundation::{BOOL, LPARAM};
     use windows::core::PWSTR;
 
     unsafe {
@@ -598,7 +658,7 @@ fn get_foreground_window() -> Option<ForegroundInfo> {
         }
 
         // 进程映像路径 → 进程名
-        let process_name = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+        let mut process_name = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
             Ok(handle) => {
                 let mut path_buf = [0u16; 1024];
                 let mut size = path_buf.len() as u32;
@@ -615,13 +675,85 @@ fn get_foreground_window() -> Option<ForegroundInfo> {
             Err(_) => String::new(),
         };
 
+        // UWP 套壳解包：当前台进程为 ApplicationFrameHost.exe 时，
+        // 通过 EnumChildWindows 找到真实子进程的映像名，覆盖 process_name。
+        // 这样 activity_type 映射才能命中真实 UWP 应用（如 SystemSettings.exe）。
+        if process_name.eq_ignore_ascii_case("ApplicationFrameHost.exe") {
+            // 用堆分配的 Option<String> 通过 LPARAM 传给回调；回调找到真实子进程后写入。
+            let mut real_proc_name: Option<String> = None;
+            let lparam = LPARAM(&mut real_proc_name as *mut Option<String> as isize);
+
+            // 回调必须是非捕获闭包（fn pointer），数据通过 LPARAM 传递。
+            let callback: WNDENUMPROC = Some(|child_hwnd, lparam| {
+                // SAFETY: lparam 由调用方传入，指向有效的 Option<String>。
+                let real_proc_ptr = lparam.0 as *mut Option<String>;
+                let real_proc = unsafe { &mut *real_proc_ptr };
+
+                // 取子窗口 PID
+                let mut child_pid: u32 = 0;
+                unsafe {
+                    GetWindowThreadProcessId(child_hwnd, Some(&mut child_pid as *mut u32));
+                }
+                if child_pid == 0 {
+                    return BOOL(1); // 继续枚举
+                }
+
+                // 取子进程映像名
+                let child_proc_name = unsafe {
+                    match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, child_pid) {
+                        Ok(handle) => {
+                            let mut path_buf = [0u16; 1024];
+                            let mut size = path_buf.len() as u32;
+                            let _ = QueryFullProcessImageNameW(
+                                handle,
+                                0,
+                                PWSTR(path_buf.as_mut_ptr()),
+                                &mut size,
+                            );
+                            let _ = windows::Win32::Foundation::CloseHandle(handle);
+                            let path = String::from_utf16_lossy(&path_buf[..size as usize]);
+                            path.rsplit('\\').next().unwrap_or(&path).to_string()
+                        }
+                        Err(_) => String::new(),
+                    }
+                };
+
+                // 找到第一个非 ApplicationFrameHost.exe 的子进程即为真实 UWP 进程
+                if !child_proc_name.is_empty()
+                    && !child_proc_name.eq_ignore_ascii_case("ApplicationFrameHost.exe")
+                {
+                    *real_proc = Some(child_proc_name);
+                    return BOOL(0); // 停止枚举
+                }
+
+                BOOL(1) // 继续枚举
+            });
+
+            // EnumChildWindows 在 windows 0.58 返回 Result<()>，失败仅记录不阻断主流程
+            if let Err(e) = EnumChildWindows(hwnd, callback, lparam) {
+                log::warn!("EnumChildWindows 调用失败: {}", e);
+            }
+
+            if let Some(real_name) = real_proc_name {
+                process_name = real_name;
+            }
+        }
+
         let app_name = process_name.trim_end_matches(".exe").to_string();
+
+        // 浏览器 URL 捕获：仅对浏览器白名单进程调用 UIA 读取地址栏
+        let browser_url = if crate::core::uia::is_browser_process(&process_name) {
+            crate::core::uia::extract_browser_url(hwnd.0 as usize)
+        } else {
+            None
+        };
 
         Some(ForegroundInfo {
             hwnd: hwnd.0 as usize,
             process_name,
             window_title,
             app_name,
+            browser_url,
         })
     }
 }
@@ -740,6 +872,7 @@ fn get_foreground_window() -> Option<ForegroundInfo> {
         process_name: "stub.exe".to_string(),
         window_title: "Stub Window".to_string(),
         app_name: "Stub".to_string(),
+        browser_url: None,
     })
 }
 
@@ -787,5 +920,96 @@ mod tests {
         let s = CaptureState::default();
         assert_eq!(s.recorder_state, "Recording");
         assert!(s.last_image_hash.is_empty());
+    }
+
+    #[test]
+    fn lookup_activity_type_coding_mixed_case() {
+        assert_eq!(lookup_activity_type("Code.exe"), "coding");
+    }
+
+    #[test]
+    fn lookup_activity_type_coding_uppercase() {
+        // 大小写不敏感
+        assert_eq!(lookup_activity_type("CODE.EXE"), "coding");
+    }
+
+    #[test]
+    fn lookup_activity_type_unknown_fallback() {
+        assert_eq!(lookup_activity_type("unknown.exe"), "other");
+    }
+
+    #[test]
+    fn lookup_activity_type_browsing() {
+        assert_eq!(lookup_activity_type("msedge.exe"), "browsing");
+    }
+
+    /// 构造内存 SQLite 并建好 `privacy_rules` 表，供隐私守卫单测使用。
+    fn setup_privacy_db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE privacy_rules (
+                id         TEXT PRIMARY KEY NOT NULL,
+                rule_type  TEXT NOT NULL,
+                pattern    TEXT NOT NULL,
+                enabled    INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT ''
+            )",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    /// L3 url 规则命中：浏览器扩展页 URL 应触发隐私模式。
+    /// 此测试回归 Task 5 修复——在 capture.rs start_polling 中将 `None`
+    /// 改为 `fg.browser_url.as_deref()`，使 url 规则能真正生效。
+    #[test]
+    fn privacy_url_rule_matches_chrome_extension() {
+        let conn = setup_privacy_db();
+        conn.execute(
+            "INSERT INTO privacy_rules(id, rule_type, pattern, enabled, created_at)
+             VALUES ('privacy-chrome-ext', 'url', 'chrome-extension://', 1, '')",
+            [],
+        )
+        .unwrap();
+
+        // 命中：URL 包含 chrome-extension://
+        assert!(matches_privacy_rules(
+            &conn,
+            "chrome.exe",
+            "Some extension page",
+            Some("chrome-extension://abcdef/options.html")
+        ));
+        // 大小写不敏感
+        assert!(matches_privacy_rules(
+            &conn,
+            "chrome.exe",
+            "",
+            Some("CHROME-EXTENSION://abc/popup.html")
+        ));
+    }
+
+    /// L3 url 规则在 URL 为 None 时不应命中（回归测试）：
+    /// 旧实现 start_polling 传 None 导致 url 规则永不触发；
+    /// 修复后只有真正读到浏览器 URL 才参与匹配。
+    #[test]
+    fn privacy_url_rule_skipped_when_url_none() {
+        let conn = setup_privacy_db();
+        conn.execute(
+            "INSERT INTO privacy_rules(id, rule_type, pattern, enabled, created_at)
+             VALUES ('privacy-chrome-ext', 'url', 'chrome-extension://', 1, '')",
+            [],
+        )
+        .unwrap();
+
+        // URL 为 None：url 规则不应命中
+        assert!(!matches_privacy_rules(&conn, "chrome.exe", "Options", None));
+        // 普通 http URL 不包含 chrome-extension://：不应命中
+        assert!(!matches_privacy_rules(
+            &conn,
+            "chrome.exe",
+            "Example",
+            Some("https://example.com/")
+        ));
     }
 }

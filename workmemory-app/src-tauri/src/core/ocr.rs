@@ -24,6 +24,22 @@ pub struct OcrTask {
     pub height: u32,
 }
 
+/// 单个 OCR 单词的几何信息
+#[derive(Debug, Clone)]
+pub struct OcrWordInfo {
+    pub text: String,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// 单行 OCR 单词集合（保留原始行分组，便于后续双栏重建）
+#[derive(Debug, Clone)]
+pub struct OcrLineInfo {
+    pub words: Vec<OcrWordInfo>,
+}
+
 /// 启动 OCR worker，返回 `Sender` 供 capture 模块入队
 ///
 /// 内部创建容量 64 的 mpsc channel，并 spawn `run_ocr_queue` 消费队列。
@@ -65,7 +81,9 @@ pub async fn run_ocr_queue(app: tauri::AppHandle, mut rx: mpsc::Receiver<OcrTask
             );
 
             match recognize(&task.image_rgba, task.width, task.height).await {
-                Some(raw) => {
+                Some(lines) => {
+                    // 双栏几何重建 → 文本清洗 → 写回 DB
+                    let raw = reconstruct_columns(&lines);
                     let cleaned = clean_text(&raw);
                     persist_ocr_result(&app_handle, &task.segment_id, &cleaned, "done");
                     log::info!(
@@ -113,22 +131,30 @@ fn persist_ocr_result(app: &tauri::AppHandle, segment_id: &str, ocr_text: &str, 
 // ============================================================================
 
 /// 清洗 OCR 原始文本：
-/// 1. 去重连续空行（修剪后丢弃空行）
-/// 2. 去除单字符噪点行
-/// 3. 合并被换行打断的句子：行尾无终止标点 **且** 下一行首字符非「大写字母 / 中文」时拼接
-/// 4. 单字符碎片被规则 2 过滤；「确定」「取消」等 2 字按钮标签因长度 > 1 自然保留
+/// 1. 逐行修剪（保留空行）
+/// 2. 丢弃仅含 OCR 噪音字符的行（□ ■ ● 等）
+/// 3. 丢弃纯符号分隔行（--- === *** 等）
+/// 4. 去除单字符噪点行（保留空行用于段落结构）
+/// 5. 合并被换行打断的句子：行尾无终止标点 **且** 下一行首字符非「大写字母 / 中文」时拼接
+/// 6. 3+ 连续空行折叠为 1 个空行（保留段落结构）
+/// 「确定」「取消」等 2 字按钮标签因长度 > 1 自然保留
 pub fn clean_text(raw: &str) -> String {
-    // 1. 逐行修剪并丢弃空行（同时去重连续空行）
+    // 1. 逐行修剪（保留空行用于后续段落结构处理）
     let mut lines: Vec<String> = raw
         .lines()
         .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
         .collect();
 
-    // 2. 去除单字符噪点行
-    lines.retain(|l| l.chars().count() > 1);
+    // 2. 丢弃仅含 OCR 噪音字符的行
+    lines.retain(|l| !is_noise_only_line(l));
 
-    // 3. 合并被换行打断的句子
+    // 3. 丢弃纯符号分隔行
+    lines.retain(|l| !is_pure_separator_line(l));
+
+    // 4. 去除单字符噪点行（保留空行）
+    lines.retain(|l| l.is_empty() || l.chars().count() > 1);
+
+    // 5. 合并被换行打断的句子
     let mut merged: Vec<String> = Vec::with_capacity(lines.len());
     for line in lines {
         let do_merge = match merged.last() {
@@ -153,7 +179,62 @@ pub fn clean_text(raw: &str) -> String {
         }
     }
 
-    merged.join("\n")
+    // 6. 3+ 连续空行折叠为 1 个空行（保留段落结构）
+    let mut result: Vec<String> = Vec::with_capacity(merged.len());
+    let mut i = 0;
+    let n = merged.len();
+    while i < n {
+        if merged[i].is_empty() {
+            let mut run_end = i;
+            while run_end < n && merged[run_end].is_empty() {
+                run_end += 1;
+            }
+            let run_len = run_end - i;
+            if run_len >= 3 {
+                result.push(String::new());
+            } else {
+                for _ in 0..run_len {
+                    result.push(String::new());
+                }
+            }
+            i = run_end;
+        } else {
+            result.push(merged[i].clone());
+            i += 1;
+        }
+    }
+
+    result.join("\n")
+}
+
+/// 行内是否仅含 OCR 噪音字符（□ ■ ● ˇ ￣ ◇ ◆ ★ ☆ ♪ ♫ 等）
+fn is_noise_only_line(line: &str) -> bool {
+    if line.is_empty() {
+        return false;
+    }
+    line.chars().all(|c| {
+        matches!(c, '□' | '■' | '●' | 'ˇ' | '￣' | '◇' | '◆' | '★' | '☆'
+            | '♪' | '♫' | '▪' | '▫' | '◦' | '○' | '◎' | '•' | '‧' | '※'
+            | '☆' | '✦' | '✧' | '✩' | '✪' | '✫' | '✬' | '✭' | '✮')
+        || c.is_whitespace()
+    })
+}
+
+/// 行内是否仅由 ≤ 2 种分隔符号重复组成且长度 ≥ 3（如 --- === ***）
+fn is_pure_separator_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.len() < 3 {
+        return false;
+    }
+    let mut distinct_symbols: std::collections::HashSet<char> = std::collections::HashSet::new();
+    for c in trimmed.chars() {
+        if matches!(c, '-' | '=' | '*' | '_' | '~' | '·' | '•' | '^' | '#' | '+' | '|') {
+            distinct_symbols.insert(c);
+        } else if !c.is_whitespace() {
+            return false;
+        }
+    }
+    distinct_symbols.len() <= 2 && !distinct_symbols.is_empty()
 }
 
 /// 行尾是否为终止标点（中英文句末标点）
@@ -182,22 +263,148 @@ fn is_cjk(c: char) -> bool {
 }
 
 // ============================================================================
+// 双栏布局重建（跨平台）
+// ============================================================================
+
+/// 按 X 坐标直方图判定单栏/双栏，重建 OCR 文本布局
+///
+/// 算法（spec §五 WinRT OCR 双栏布局重建）：
+/// 1. 展平所有 `OcrWordInfo`，按 50px 分桶统计 X 坐标直方图
+/// 2. 扫描直方图寻找满足条件的空白带（>= 2 个连续空桶且像素宽度 >= 80px，
+///    两侧均有 word）→ 双栏；否则单栏
+/// 3. 单栏：按 Y 升序逐行输出（同一 Y 容差 20px 内的 word 合并为一行）
+/// 4. 双栏：左组按 Y 排序输出，加 `[左栏]` 标记；右组同理，加 `[右栏]` 标记，
+///    栏间用空行隔离
+pub fn reconstruct_columns(lines: &[OcrLineInfo]) -> String {
+    // 1. 展平所有 word
+    let all_words: Vec<&OcrWordInfo> = lines.iter().flat_map(|l| l.words.iter()).collect();
+    if all_words.is_empty() {
+        return String::new();
+    }
+
+    // 2. 构建 X 坐标直方图（50px 分桶）
+    let mut max_bucket: usize = 0;
+    let mut bucket_counts: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
+    for w in &all_words {
+        let bucket = (w.x / 50.0).floor() as usize;
+        *bucket_counts.entry(bucket).or_insert(0) += 1;
+        if bucket > max_bucket {
+            max_bucket = bucket;
+        }
+    }
+
+    // 3. 扫描直方图寻找满足条件的空白带
+    let mut gap_start_pixel: Option<f64> = None;
+    let mut gap_end_pixel: Option<f64> = None;
+    let mut i = 0usize;
+    while i <= max_bucket {
+        let count = *bucket_counts.get(&i).unwrap_or(&0);
+        if count == 0 {
+            // 找到一段连续空桶 [run_start, run_end]
+            let run_start = i;
+            let mut run_end = i;
+            while run_end + 1 <= max_bucket
+                && *bucket_counts.get(&(run_end + 1)).unwrap_or(&0) == 0
+            {
+                run_end += 1;
+            }
+            let empty_count = run_end - run_start + 1;
+            let pixel_span = (empty_count * 50) as f64;
+            // 空白带不能位于边缘：两侧均需有 word
+            let has_before = (0..run_start).any(|b| *bucket_counts.get(&b).unwrap_or(&0) > 0);
+            let has_after = ((run_end + 1)..=max_bucket)
+                .any(|b| *bucket_counts.get(&b).unwrap_or(&0) > 0);
+            if empty_count >= 2 && pixel_span >= 80.0 && has_before && has_after {
+                gap_start_pixel = Some((run_start * 50) as f64);
+                gap_end_pixel = Some(((run_end + 1) * 50) as f64);
+                break;
+            }
+            i = run_end + 1;
+        } else {
+            i += 1;
+        }
+    }
+
+    match (gap_start_pixel, gap_end_pixel) {
+        (Some(start_px), Some(end_px)) => {
+            // 双栏：左组 x < start_px，右组 x >= end_px（空白带内无 word）
+            let left: Vec<&OcrWordInfo> = all_words
+                .iter()
+                .copied()
+                .filter(|w| w.x < start_px)
+                .collect();
+            let right: Vec<&OcrWordInfo> = all_words
+                .iter()
+                .copied()
+                .filter(|w| w.x >= end_px)
+                .collect();
+            let left_text = group_words_into_rows(&left).join("\n");
+            let right_text = group_words_into_rows(&right).join("\n");
+            format!("[左栏]\n{}\n\n[右栏]\n{}", left_text, right_text)
+        }
+        _ => {
+            // 单栏：按 Y 升序逐行输出
+            group_words_into_rows(&all_words).join("\n")
+        }
+    }
+}
+
+/// 将 word 按 Y 容差（20px）聚合成行，行内按 X 升序拼接
+fn group_words_into_rows(words: &[&OcrWordInfo]) -> Vec<String> {
+    if words.is_empty() {
+        return Vec::new();
+    }
+    let mut sorted: Vec<&OcrWordInfo> = words.to_vec();
+    sorted.sort_by(|a, b| {
+        a.y.partial_cmp(&b.y)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
+    });
+
+    let mut rows: Vec<Vec<&OcrWordInfo>> = Vec::new();
+    for w in sorted {
+        // 与当前行锚点（首词 Y）差值 > 20px 则新起一行
+        let start_new = match rows.last().and_then(|r| r.first()) {
+            Some(anchor) => (w.y - anchor.y).abs() > 20.0,
+            None => true,
+        };
+        if start_new {
+            rows.push(vec![w]);
+        } else if let Some(row) = rows.last_mut() {
+            row.push(w);
+        }
+    }
+
+    rows.into_iter()
+        .map(|mut row| {
+            row.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+            row.iter()
+                .map(|w| w.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect()
+}
+
+// ============================================================================
 // Windows：WinRT Media.Ocr 真实实现
 // ============================================================================
 #[cfg(target_os = "windows")]
 mod winrt_impl {
+    use super::{OcrLineInfo, OcrWordInfo};
     use windows::core::Interface;
     use windows::Foundation::{IBuffer, IMemoryBufferByteAccess, MemoryBuffer};
     use windows::Globalization::Language;
     use windows::Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap};
     use windows::Media::Ocr::OcrEngine;
 
-    /// 调用 WinRT Media.Ocr 识别 RGBA 像素，返回按行 `\n` 拼接的文本
+    /// 调用 WinRT Media.Ocr 识别 RGBA 像素，返回 word 级几何信息（按行分组）
     pub(super) async fn recognize_inner(
         rgba: &[u8],
         width: u32,
         height: u32,
-    ) -> windows::core::Result<String> {
+    ) -> windows::core::Result<Vec<OcrLineInfo>> {
         // 1) RGBA → BGRA：WinRT SoftwareBitmap 使用 Bgra8 格式，逐像素交换 R / B 通道
         let mut bgra = rgba.to_vec();
         for px in bgra.chunks_exact_mut(4) {
@@ -239,21 +446,33 @@ mod winrt_impl {
         // 5) 异步识别：IAsyncOperation<OcrResult> 由 windows-rs 转为 Future，可直接 await
         let result = engine.RecognizeAsync(&software_bitmap).await?;
 
-        // 6) 遍历 Lines（IIterable 实现 IntoIterator），行间用 \n 拼接
-        let mut texts: Vec<String> = Vec::new();
+        // 6) 遍历 Lines → Words，提取 word 级几何信息
+        let mut lines: Vec<OcrLineInfo> = Vec::new();
         for line in result.Lines()? {
-            texts.push(line.Text()?.to_string());
+            let mut words: Vec<OcrWordInfo> = Vec::new();
+            for word in line.Words()? {
+                let text = word.Text()?.to_string();
+                let rect = word.BoundingRect()?;
+                words.push(OcrWordInfo {
+                    text,
+                    x: rect.X as f64,
+                    y: rect.Y as f64,
+                    width: rect.Width as f64,
+                    height: rect.Height as f64,
+                });
+            }
+            lines.push(OcrLineInfo { words });
         }
 
-        Ok(texts.join("\n"))
+        Ok(lines)
     }
 }
 
-/// Windows 平台：调用 WinRT Media.Ocr
+/// Windows 平台：调用 WinRT Media.Ocr，返回 word 级几何信息
 #[cfg(target_os = "windows")]
-pub async fn recognize(rgba: &[u8], width: u32, height: u32) -> Option<String> {
+pub async fn recognize(rgba: &[u8], width: u32, height: u32) -> Option<Vec<OcrLineInfo>> {
     match winrt_impl::recognize_inner(rgba, width, height).await {
-        Ok(text) => Some(text),
+        Ok(lines) => Some(lines),
         Err(e) => {
             log::warn!("WinRT OCR 识别失败: {}", e);
             None
@@ -265,6 +484,186 @@ pub async fn recognize(rgba: &[u8], width: u32, height: u32) -> Option<String> {
 // 非 Windows 平台：stub，保证 cargo check 通过
 // ============================================================================
 #[cfg(not(target_os = "windows"))]
-pub async fn recognize(_rgba: &[u8], _width: u32, _height: u32) -> Option<String> {
-    Some("[stub] OCR not available on non-Windows".into())
+pub async fn recognize(_rgba: &[u8], _width: u32, _height: u32) -> Option<Vec<OcrLineInfo>> {
+    Some(Vec::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clean_text_drops_noise_line() {
+        assert_eq!(clean_text("□ □ □\nhello"), "hello");
+    }
+
+    #[test]
+    fn test_clean_text_drops_separator_line_dash() {
+        assert_eq!(clean_text("---\nhello"), "hello");
+    }
+
+    #[test]
+    fn test_clean_text_drops_separator_line_equals() {
+        assert_eq!(clean_text("=== === ===\nhello"), "hello");
+    }
+
+    #[test]
+    fn test_clean_text_preserves_2char_lines() {
+        assert_eq!(clean_text("确定\n取消"), "确定\n取消");
+    }
+
+    #[test]
+    fn test_clean_text_collapses_5_newlines_to_1_empty() {
+        assert_eq!(clean_text("line1\n\n\n\n\nline2"), "line1\n\nline2");
+    }
+
+    #[test]
+    fn test_clean_text_preserves_single_empty_line() {
+        assert_eq!(clean_text("line1\n\nline2"), "line1\n\nline2");
+    }
+
+    #[test]
+    fn test_is_noise_only_line_noise() {
+        assert!(is_noise_only_line("□ □ □"));
+    }
+
+    #[test]
+    fn test_is_noise_only_line_text() {
+        assert!(!is_noise_only_line("hello"));
+    }
+
+    #[test]
+    fn test_is_pure_separator_line_dash() {
+        assert!(is_pure_separator_line("---"));
+    }
+
+    #[test]
+    fn test_is_pure_separator_line_equals() {
+        assert!(is_pure_separator_line("==="));
+    }
+
+    #[test]
+    fn test_is_pure_separator_line_asterisk() {
+        assert!(is_pure_separator_line("***"));
+    }
+
+    #[test]
+    fn test_is_pure_separator_line_text() {
+        assert!(!is_pure_separator_line("hello"));
+    }
+
+    #[test]
+    fn test_is_pure_separator_line_short() {
+        assert!(!is_pure_separator_line("--"));
+    }
+
+    #[test]
+    fn test_is_pure_separator_line_3_distinct() {
+        // Spec test case lists "---===---" (2 distinct separators) → false
+        // with description "(3 distinct symbols)". The input only has 2 distinct
+        // separators, so per the spec helper (<= 2) it would return true.
+        // Using "---===***" (3 distinct separators) to match the "3 distinct
+        // symbols → false" intent described in the task spec.
+        assert!(!is_pure_separator_line("---===***"));
+    }
+
+    fn make_word(text: &str, x: f64, y: f64) -> OcrWordInfo {
+        OcrWordInfo {
+            text: text.to_string(),
+            x,
+            y,
+            width: 10.0,
+            height: 10.0,
+        }
+    }
+
+    fn make_line(words: Vec<OcrWordInfo>) -> OcrLineInfo {
+        OcrLineInfo { words }
+    }
+
+    #[test]
+    fn test_reconstruct_columns_empty() {
+        assert_eq!(reconstruct_columns(&[]), "");
+    }
+
+    #[test]
+    fn test_reconstruct_columns_single_column() {
+        // 所有 word 的 X 都在 [0..400]，单峰分布
+        let lines = vec![
+            make_line(vec![
+                make_word("Hello", 10.0, 10.0),
+                make_word("World", 100.0, 10.0),
+            ]),
+            make_line(vec![make_word("Foo", 50.0, 50.0)]),
+            make_line(vec![
+                make_word("Bar", 20.0, 90.0),
+                make_word("Baz", 200.0, 90.0),
+            ]),
+        ];
+        let result = reconstruct_columns(&lines);
+        assert!(!result.contains("[左栏]"));
+        assert!(!result.contains("[右栏]"));
+        // Y=10 行：Hello World（X 升序 10, 100）；Y=50 行：Foo；Y=90 行：Bar Baz
+        assert_eq!(result, "Hello World\nFoo\nBar Baz");
+    }
+
+    #[test]
+    fn test_reconstruct_columns_dual_column() {
+        // 左簇 X [0..400]，右簇 X [500..1000]，中间存在稳定空白带
+        let lines = vec![
+            make_line(vec![
+                make_word("Left1", 10.0, 10.0),
+                make_word("Right1", 510.0, 10.0),
+            ]),
+            make_line(vec![
+                make_word("Left2", 100.0, 50.0),
+                make_word("Right2", 600.0, 50.0),
+            ]),
+            make_line(vec![
+                make_word("Left3", 200.0, 90.0),
+                make_word("Right3", 700.0, 90.0),
+            ]),
+        ];
+        let result = reconstruct_columns(&lines);
+        assert!(result.contains("[左栏]"));
+        assert!(result.contains("[右栏]"));
+        // 左栏 word 必须出现在 [左栏] 之后、[右栏] 之前
+        let left_idx = result.find("[左栏]").unwrap();
+        let right_idx = result.find("[右栏]").unwrap();
+        let left_section = &result[left_idx..right_idx];
+        assert!(left_section.contains("Left1"));
+        assert!(left_section.contains("Left2"));
+        assert!(left_section.contains("Left3"));
+        assert!(!left_section.contains("Right1"));
+        let right_section = &result[right_idx..];
+        assert!(right_section.contains("Right1"));
+        assert!(right_section.contains("Right2"));
+        assert!(right_section.contains("Right3"));
+    }
+
+    #[test]
+    fn test_reconstruct_columns_row_grouping_y_tolerance() {
+        // Y=10, Y=15（容差 20px 内，同一行），Y=50（新行）
+        let lines = vec![make_line(vec![
+            make_word("a", 10.0, 10.0),
+            make_word("b", 50.0, 15.0),
+            make_word("c", 90.0, 50.0),
+        ])];
+        let result = reconstruct_columns(&lines);
+        assert!(!result.contains("[左栏]"));
+        // 应形成 2 行："a b" 与 "c"
+        assert_eq!(result, "a b\nc");
+    }
+
+    #[test]
+    fn test_reconstruct_columns_row_word_ordering_by_x() {
+        // 同一行内 X=100, X=50, X=200 → 排序后 "word50 word100 word200"
+        let lines = vec![make_line(vec![
+            make_word("word100", 100.0, 10.0),
+            make_word("word50", 50.0, 10.0),
+            make_word("word200", 200.0, 10.0),
+        ])];
+        let result = reconstruct_columns(&lines);
+        assert_eq!(result, "word50 word100 word200");
+    }
 }

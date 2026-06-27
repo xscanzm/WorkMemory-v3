@@ -15,7 +15,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.0", features = [] }
 
 [dependencies]
-tauri = { version = "2.0", features = ["tray-icon", "image-png"] }
+tauri = { version = "2.0", features = ["tray-icon", "image-png", "protocol-asset"] }
 tauri-plugin-shell = "2.0"
 tauri-plugin-global-shortcut = "2.0"
 tokio = { version = "1.35", features = ["full"] }
@@ -44,6 +44,8 @@ windows = { version = "0.58", features = [
     "Graphics_Imaging",
     "Foundation",
     "Globalization",
+    "UI_UIAutomation",
+    "Win32_UI_Accessibility",
 ] }
 
 [features]

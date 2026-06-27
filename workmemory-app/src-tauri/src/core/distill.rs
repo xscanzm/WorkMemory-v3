@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use chrono::{Local, NaiveTime, Utc};
+use chrono::{Local, NaiveTime, Timelike, Utc};
 use serde::Deserialize;
 use tauri::{Emitter, Manager};
 use uuid::Uuid;
@@ -343,19 +343,40 @@ async fn distill_with_ai(
     Ok(pairs)
 }
 
+/// 将单个 Segment 序列化为结构化场景块（JSON 对象）。
+/// 输出六字段：timestamp / app_name / window_title / browser_url / activity_type / reconstructed_text
+/// 当 browser_url 存在时，在 reconstructed_text 前加 "网页上下文：{domain}{path}\n" 前缀。
+fn serialize_segment_block(seg: &WorkSegment) -> serde_json::Value {
+    // 1. 构建 reconstructed_text：browser_url 存在时加网页上下文前缀
+    let reconstructed_text = match &seg.browser_url {
+        Some(url) => {
+            let context = match crate::core::url_util::parse_domain_path(url) {
+                Some((domain, path)) => format!("网页上下文：{}{}\n", domain, path),
+                None => format!("网页上下文：{}\n", url),
+            };
+            format!("{}{}", context, seg.ocr_text)
+        }
+        None => seg.ocr_text.clone(),
+    };
+
+    // 2. 组装 JSON 对象（保持字段顺序便于 LLM 阅读）
+    serde_json::json!({
+        "timestamp": format!("{} {}", seg.date, seg.start_time),
+        "app_name": seg.app_name,
+        "window_title": seg.window_title,
+        "browser_url": seg.browser_url,
+        "activity_type": seg.activity_type,
+        "reconstructed_text": reconstructed_text,
+    })
+}
+
 /// 组装 OCR 文本与窗口标题流为 ocr_records 字符串。
-/// 每行格式：`[HH:MM:SS] appName - windowTitle: ocrText`
+/// 每行为一个 Segment 序列化后的紧凑 JSON 对象（结构化场景块）。
 fn build_ocr_records(segments: &[WorkSegment]) -> String {
     segments
         .iter()
-        .map(|s| {
-            let ocr = s.ocr_text.replace('\n', " ");
-            let ocr = ocr.trim();
-            format!(
-                "[{}] {} - {}: {}",
-                s.start_time, s.app_name, s.window_title, ocr
-            )
-        })
+        .map(serialize_segment_block)
+        .map(|v| v.to_string())
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -601,14 +622,21 @@ fn distill_with_local_cluster(
     }
 
     // ---- 聚类 ----
+    // Task 11：聚类维度增加 activity_type —— 同 activity_type（非 None/非 "other"）
+    // 亦可并入当前簇，前提仍是时间间隔 <10min（保留原时间窗约束）。
     let mut clusters: Vec<Vec<&WorkSegment>> = Vec::new();
     for seg in segments {
         let mut append = false;
         if let Some(last_cluster) = clusters.last_mut() {
             if let Some(last_seg) = last_cluster.last() {
-                if last_seg.process_name == seg.process_name
-                    && time_gap_secs(last_seg, seg) < 600
-                {
+                let same_process = last_seg.process_name == seg.process_name;
+                let same_activity = last_seg
+                    .activity_type
+                    .as_deref()
+                    .zip(seg.activity_type.as_deref())
+                    .map(|(a, b)| a == b && a != "other")
+                    .unwrap_or(false);
+                if (same_process || same_activity) && time_gap_secs(last_seg, seg) < 600 {
                     last_cluster.push(seg);
                     append = true;
                 }
@@ -642,7 +670,7 @@ fn build_local_episode(
     let duration_min = (total_secs as f64 / 60.0).round() as i64;
 
     let title = pick_cluster_title(cluster);
-    let memory_kind = infer_memory_kind(&process_name, cluster);
+    let memory_kind = infer_memory_kind(&process_name, first.activity_type.as_deref(), cluster);
 
     // summary: 统计性描述
     let distinct_titles: Vec<String> = {
@@ -785,7 +813,25 @@ fn pick_cluster_title(cluster: &[&WorkSegment]) -> String {
 }
 
 /// 推断 memoryKind：coding/browsing/communication/writing/reading，其他=idle/work。
-fn infer_memory_kind(process_name: &str, cluster: &[&WorkSegment]) -> String {
+///
+/// Task 11：优先按 activity_type 映射 memory_kind（明确活动类型胜过进程名推断）；
+/// activity_type 为 None 或 "other"（含旧数据）时回退到既有 process_name 逻辑。
+fn infer_memory_kind(process_name: &str, activity_type: Option<&str>, cluster: &[&WorkSegment]) -> String {
+    // activity_type 优先（Task 11）
+    if let Some(act) = activity_type {
+        let kind = match act {
+            "coding" => "work",
+            "browsing" => "research",
+            "communication" => "meeting",
+            "document" => "documentation",
+            "spreadsheet" => "work",
+            "terminal" => "work",
+            _ => "", // "other" 或未知 → 回退到 process_name 推断
+        };
+        if !kind.is_empty() {
+            return kind.to_string();
+        }
+    }
     let proc_lower = process_name.to_lowercase();
     let combined: String = cluster
         .iter()
@@ -1189,17 +1235,47 @@ mod tests {
     }
 
     #[test]
+    fn cluster_merges_same_activity_type_different_process() {
+        // Task 11：3 个不同浏览器进程（msedge / chrome / firefox），但 activity_type
+        // 均为 "browsing"，且时间间隔 <10min，应聚为 1 簇。
+        let mut s1 = seg("a", "14:00:00", "14:05:00", "msedge.exe", "Edge", "t1", 300);
+        s1.activity_type = Some("browsing".to_string());
+        let mut s2 = seg("b", "14:06:00", "14:10:00", "chrome.exe", "Chrome", "t2", 240);
+        s2.activity_type = Some("browsing".to_string());
+        let mut s3 = seg("c", "14:11:00", "14:15:00", "firefox.exe", "Firefox", "t3", 240);
+        s3.activity_type = Some("browsing".to_string());
+        let segs = vec![s1, s2, s3];
+        let result = distill_with_local_cluster("2026-06-26", "14:00", &segs);
+        assert_eq!(result.len(), 1, "同 activity_type 不同进程 <10min 应聚为 1 簇");
+        assert_eq!(result[0].0.segment_ids.len(), 3);
+        // browsing → research（Task 11 activity_type 优先映射）
+        assert_eq!(result[0].0.memory_kind, "research");
+    }
+
+    #[test]
+    fn cluster_does_not_merge_on_activity_other() {
+        // Task 11：activity_type="other" 不应触发跨进程合并，仍按进程名切分。
+        let mut s1 = seg("a", "14:00:00", "14:05:00", "msedge.exe", "Edge", "t1", 300);
+        s1.activity_type = Some("other".to_string());
+        let mut s2 = seg("b", "14:06:00", "14:10:00", "chrome.exe", "Chrome", "t2", 240);
+        s2.activity_type = Some("other".to_string());
+        let segs = vec![s1, s2];
+        let result = distill_with_local_cluster("2026-06-26", "14:00", &segs);
+        assert_eq!(result.len(), 2, "activity_type=other 不应跨进程合并");
+    }
+
+    #[test]
     fn infer_kind_coding() {
         let s = seg("a", "14:00:00", "14:05:00", "Code.exe", "Code", "main.go", 300);
         let segs = vec![s];
-        assert_eq!(infer_memory_kind("Code.exe", &segs.iter().collect::<Vec<_>>()), "coding");
+        assert_eq!(infer_memory_kind("Code.exe", None, &segs.iter().collect::<Vec<_>>()), "coding");
     }
 
     #[test]
     fn infer_kind_browsing() {
         let s = seg("a", "14:00:00", "14:05:00", "chrome.exe", "Chrome", "Google", 300);
         let segs = vec![s];
-        assert_eq!(infer_memory_kind("chrome.exe", &segs.iter().collect::<Vec<_>>()), "browsing");
+        assert_eq!(infer_memory_kind("chrome.exe", None, &segs.iter().collect::<Vec<_>>()), "browsing");
     }
 
     #[test]
@@ -1228,6 +1304,38 @@ mod tests {
         assert!(p.contains("[14:00:00] Code - t1: hello"));
         assert!(p.contains("\"episodes\""));
         assert!(p.starts_with("你是一个高精度的个人工作记忆整理专家。"));
+    }
+
+    #[test]
+    fn serialize_segment_block_includes_all_six_fields() {
+        let mut s = seg("a", "14:00:00", "14:05:00", "Code.exe", "Code", "main.go", 300);
+        s.browser_url = Some("https://github.com/org/repo/pull/421".to_string());
+        s.activity_type = Some("coding".to_string());
+        s.ocr_text = "Fix checkout state machine".to_string();
+        let block = serialize_segment_block(&s);
+        assert_eq!(block["app_name"], "Code");
+        assert_eq!(block["window_title"], "main.go");
+        assert_eq!(block["browser_url"], "https://github.com/org/repo/pull/421");
+        assert_eq!(block["activity_type"], "coding");
+        assert_eq!(block["timestamp"], "2026-06-26 14:00:00");
+        let rt = block["reconstructed_text"].as_str().unwrap();
+        assert!(
+            rt.starts_with("网页上下文：github.com/org/repo/pull/421\n"),
+            "应包含网页上下文前缀"
+        );
+        assert!(rt.contains("Fix checkout state machine"));
+    }
+
+    #[test]
+    fn serialize_segment_block_no_browser_url_no_prefix() {
+        let mut s = seg("a", "14:00:00", "14:05:00", "Code.exe", "Code", "main.go", 300);
+        s.activity_type = Some("coding".to_string());
+        s.ocr_text = "hello world".to_string();
+        let block = serialize_segment_block(&s);
+        let rt = block["reconstructed_text"].as_str().unwrap();
+        assert_eq!(rt, "hello world"); // 无网页上下文前缀
+        assert!(block["browser_url"].is_null());
+        assert_eq!(block["activity_type"], "coding");
     }
 
     #[test]

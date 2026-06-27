@@ -271,3 +271,108 @@ pub struct GraphData {
     pub nodes: Vec<GraphNode>,
     pub edges: Vec<GraphEdge>,
 }
+
+// ============================================================
+// 任务 / 宠物 / 专注层 (WorkMemory-v3 新增结构体)
+// ============================================================
+
+/// 任务 (对应 tasks 表)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Task {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub status: String,
+    pub priority: String,
+    pub due_date: Option<String>,
+    pub mood_tag: Option<String>,
+    pub recurrence_rule: Option<String>,
+    pub is_pinned: bool,
+    pub sort_order: i64,
+    /// JSON 数组在 DB 中以 TEXT 存储，repository 层负责 serde_json 转换。
+    pub subtasks: Vec<String>,
+    pub category: String,
+    pub tags: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// 宠物状态 (对应 pet_state 表, 单行 id='default')
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PetState {
+    pub id: String,
+    pub species: String,
+    pub level: i64,
+    pub xp: i64,
+    pub hunger: i64,
+    pub energy: i64,
+    pub happiness: i64,
+    pub cleanliness: i64,
+    pub bond_level: i64,
+    pub mood: String,
+    pub last_updated: String,
+}
+
+/// 每日统计 (对应 daily_stats 表)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyStats {
+    pub date: String,
+    pub tasks_completed: i64,
+    pub total_focus_time: i64,
+    pub streak_count: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// 专注会话 (对应 focus_sessions 表)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusSession {
+    pub id: String,
+    pub start_time: String,
+    pub end_time: Option<String>,
+    pub duration_seconds: i64,
+    pub r#type: String,
+    pub task_id: Option<String>,
+    pub interrupted: bool,
+    pub interruption_reason: String,
+    pub created_at: String,
+}
+
+/// 成就 (对应 achievements 表)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Achievement {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub icon: String,
+    pub unlocked: bool,
+    pub unlocked_at: Option<String>,
+    pub created_at: String,
+}
+
+/// 白噪音音景包 (对应 soundscape_packs 表)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SoundscapePack {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub layers: Vec<String>,
+    pub enabled: bool,
+    pub created_at: String,
+}
+
+/// 宠物互动日志 (对应 pet_interaction_logs 表)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PetInteractionLog {
+    pub id: String,
+    pub action: String,
+    pub delta: String,
+    pub created_at: String,
+}

@@ -17,7 +17,7 @@
         "enable": true,
         "scope": ["$RESOURCE/pet/**"]
       },
-      "csp": null
+      "csp": "default-src 'self'; img-src 'self' asset: https://asset.localhost data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' https://api.openai.com ipc: http://ipc.localhost; font-src 'self' data:; frame-src 'none'; object-src 'none'"
     },
     "windows": [
       {

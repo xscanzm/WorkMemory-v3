@@ -130,3 +130,94 @@ body {
   padding: 4px 12px;
   color: var(--color-text-light);
 }
+
+/* ===== Toast 入场动画 ===== */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ===== 字体说明 ===== */
+/* Inter 与 JetBrains Mono 优先使用系统已安装版本，未安装时回退到 PingFang SC / SF Mono。
+   如需打包字体，将 woff2 放入 public/fonts/ 并取消下方 @font-face 注释。 */
+
+/* ===== 毛玻璃变体 ===== */
+.glass-panel-strong {
+  background: var(--color-surface-glass-strong);
+  backdrop-filter: var(--blur-glass-strong);
+  -webkit-backdrop-filter: var(--blur-glass-strong);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.glass-panel-subtle {
+  background: var(--color-surface-glass);
+  backdrop-filter: var(--blur-glass-subtle);
+  -webkit-backdrop-filter: var(--blur-glass-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+/* ===== 弹性动画工具类 ===== */
+.animate-spring {
+  transition: all var(--duration-spring) var(--ease-spring);
+}
+
+.animate-spring-soft {
+  transition: all var(--duration-base) var(--ease-spring-soft);
+}
+
+@keyframes spring-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.92) translateY(8px);
+  }
+  60% {
+    transform: scale(1.02) translateY(-2px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.spring-in {
+  animation: spring-in var(--duration-bounce) var(--ease-spring) both;
+}
+
+@keyframes bounce-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  50% {
+    transform: scale(1.05);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.bounce-in {
+  animation: bounce-in var(--duration-bounce) var(--ease-spring) both;
+}
+
+/* ===== 渐变进度条 ===== */
+.gradient-bar-primary {
+  background: linear-gradient(90deg, var(--color-primary) 0%, var(--color-accent) 100%);
+}
+
+.gradient-bar-success {
+  background: linear-gradient(90deg, var(--color-success) 0%, var(--color-secondary) 100%);
+}
+
+.gradient-bar-warning {
+  background: linear-gradient(90deg, var(--color-warning) 0%, var(--color-danger) 100%);
+}

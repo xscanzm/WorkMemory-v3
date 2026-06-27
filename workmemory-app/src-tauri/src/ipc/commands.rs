@@ -13,8 +13,12 @@
 
 use tauri::Manager;
 
+use crate::core::pet_engine;
+use crate::core::task_engine;
 use crate::db::repository;
 use crate::models;
+use crate::models::PetState;
+use crate::models::Task;
 
 // ============================================================
 // 录制状态机 (core::capture)
@@ -696,6 +700,130 @@ pub struct MascotInfo {
     pub id: i64,
     pub display_name: String,
     pub description: String,
+}
+
+// ============================================================
+// 每日统计 (core::stats_engine)
+// ============================================================
+
+/// 获取指定日期的每日统计（不存在则创建默认行）。
+#[tauri::command]
+pub fn get_daily_stats(app: tauri::AppHandle, date: String) -> Result<models::DailyStats, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    core::stats_engine::get_daily_stats(&conn, &date).map_err(|e| e.to_string())
+}
+
+/// 获取今日每日统计。
+#[tauri::command]
+pub fn get_today_stats(app: tauri::AppHandle) -> Result<models::DailyStats, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    core::stats_engine::get_today_stats(&conn).map_err(|e| e.to_string())
+}
+
+// ============================================================
+// 宠物引擎 (core::pet_engine)
+// ============================================================
+
+/// 获取宠物状态（单行，id='default'）。
+#[tauri::command]
+pub fn get_pet_state(app: tauri::AppHandle) -> Result<PetState, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    pet_engine::get_pet_state(&conn).map_err(|e| e.to_string())
+}
+
+/// 保存宠物状态（全量覆盖写）。
+#[tauri::command]
+pub fn save_pet_state(app: tauri::AppHandle, pet: PetState) -> Result<(), String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    pet_engine::save_pet_state(&conn, &pet).map_err(|e| e.to_string())
+}
+
+/// 喂食：+hunger, +happiness。
+#[tauri::command]
+pub fn feed_pet(app: tauri::AppHandle) -> Result<PetState, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    pet_engine::feed(&conn).map_err(|e| e.to_string())
+}
+
+/// 玩耍：+happiness, -energy, +bond。
+#[tauri::command]
+pub fn play_pet(app: tauri::AppHandle) -> Result<PetState, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    pet_engine::play(&conn).map_err(|e| e.to_string())
+}
+
+/// 休息：+energy，mood 置为 sleeping。
+#[tauri::command]
+pub fn rest_pet(app: tauri::AppHandle) -> Result<PetState, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    pet_engine::rest(&conn).map_err(|e| e.to_string())
+}
+
+/// 清洁：+cleanliness, +happiness。
+#[tauri::command]
+pub fn clean_pet(app: tauri::AppHandle) -> Result<PetState, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    pet_engine::clean(&conn).map_err(|e| e.to_string())
+}
+
+// ============================================================
+// 任务引擎 (core::task_engine)
+// ============================================================
+
+/// 创建任务（后端生成 uuid v4，含标题校验与状态机默认值）。
+#[tauri::command]
+pub fn save_task(app: tauri::AppHandle, task: Task) -> Result<Task, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    task_engine::save_task(&conn, task).map_err(|e| e.to_string())
+}
+
+/// 查询全部任务（按 sort_order ASC, created_at DESC 排序）。
+#[tauri::command]
+pub fn get_all_tasks(app: tauri::AppHandle) -> Result<Vec<Task>, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    task_engine::get_all_tasks(&conn).map_err(|e| e.to_string())
+}
+
+/// 按 ID 查询单个任务。
+#[tauri::command]
+pub fn get_task(app: tauri::AppHandle, id: String) -> Result<Task, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    task_engine::get_task(&conn, &id).map_err(|e| e.to_string())
+}
+
+/// 更新任务（含状态机守卫：archived 为终态，非法流转将被拒绝）。
+#[tauri::command]
+pub fn update_task(app: tauri::AppHandle, task: Task) -> Result<(), String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    task_engine::update_task(&conn, &task).map_err(|e| e.to_string())
+}
+
+/// 删除任务（不存在则返回 NotFound 错误）。
+#[tauri::command]
+pub fn delete_task(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    task_engine::delete_task(&conn, &id).map_err(|e| e.to_string())
+}
+
+/// FTS5 全文搜索任务（匹配 title / description）。
+#[tauri::command]
+pub fn search_tasks(app: tauri::AppHandle, query: String) -> Result<Vec<Task>, String> {
+    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    task_engine::search_tasks(&conn, &query).map_err(|e| e.to_string())
 }
 
 // ============================================================

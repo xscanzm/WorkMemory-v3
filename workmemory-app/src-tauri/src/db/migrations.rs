@@ -241,6 +241,132 @@ CREATE TRIGGER IF NOT EXISTS trg_wiki_au AFTER UPDATE ON wiki_pages BEGIN
 END;
 
 -- ============================================================
+-- 任务 / 宠物 / 专注层 (WorkMemory-v3 新增表)
+-- ============================================================
+
+-- 10. 任务表
+CREATE TABLE IF NOT EXISTS tasks (
+  id              TEXT PRIMARY KEY NOT NULL,
+  title           TEXT NOT NULL,
+  description     TEXT NOT NULL DEFAULT '',
+  status          TEXT NOT NULL DEFAULT 'inbox',  -- inbox/todo/in_progress/completed/archived
+  priority        TEXT NOT NULL DEFAULT 'none',   -- none/low/medium/high/urgent
+  due_date        TEXT,                            -- ISO date or NULL
+  mood_tag        TEXT,                            -- 情绪标签
+  recurrence_rule TEXT,                            -- iCal RRULE or NULL
+  is_pinned       INTEGER NOT NULL DEFAULT 0,
+  sort_order      INTEGER NOT NULL DEFAULT 0,
+  subtasks        TEXT NOT NULL DEFAULT '[]',      -- JSON array
+  category        TEXT NOT NULL DEFAULT '',
+  tags            TEXT NOT NULL DEFAULT '[]',      -- JSON array
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority);
+CREATE INDEX IF NOT EXISTS idx_tasks_category ON tasks(category);
+CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);
+CREATE INDEX IF NOT EXISTS idx_tasks_pinned ON tasks(is_pinned);
+
+-- 11. 任务全文索引 (FTS5)
+CREATE VIRTUAL TABLE IF NOT EXISTS fts_tasks USING fts5(
+  title, description,
+  content='tasks', content_rowid='rowid',
+  tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_tasks_ai AFTER INSERT ON tasks BEGIN
+  INSERT INTO fts_tasks(rowid, title, description) VALUES (new.rowid, new.title, new.description);
+END;
+CREATE TRIGGER IF NOT EXISTS trg_tasks_ad BEFORE DELETE ON tasks BEGIN
+  INSERT INTO fts_tasks(fts_tasks, rowid, title, description) VALUES('delete', old.rowid, old.title, old.description);
+END;
+CREATE TRIGGER IF NOT EXISTS trg_tasks_au AFTER UPDATE ON tasks BEGIN
+  INSERT INTO fts_tasks(fts_tasks, rowid, title, description) VALUES('delete', old.rowid, old.title, old.description);
+  INSERT INTO fts_tasks(rowid, title, description) VALUES (new.rowid, new.title, new.description);
+END;
+
+-- 12. 宠物状态表 (单行, id='default')
+CREATE TABLE IF NOT EXISTS pet_state (
+  id            TEXT PRIMARY KEY NOT NULL DEFAULT 'default',
+  species       TEXT NOT NULL DEFAULT 'cat',
+  level         INTEGER NOT NULL DEFAULT 1,
+  xp            INTEGER NOT NULL DEFAULT 0,
+  hunger        INTEGER NOT NULL DEFAULT 80,   -- 0-100
+  energy        INTEGER NOT NULL DEFAULT 80,
+  happiness     INTEGER NOT NULL DEFAULT 80,
+  cleanliness   INTEGER NOT NULL DEFAULT 80,
+  bond_level    INTEGER NOT NULL DEFAULT 0,
+  mood          TEXT NOT NULL DEFAULT 'happy', -- ecstatic/happy/content/neutral/sad/angry/sleeping
+  last_updated  TEXT NOT NULL
+);
+
+-- 13. 每日统计表
+CREATE TABLE IF NOT EXISTS daily_stats (
+  date              TEXT PRIMARY KEY NOT NULL,
+  tasks_completed   INTEGER NOT NULL DEFAULT 0,
+  total_focus_time  INTEGER NOT NULL DEFAULT 0,  -- seconds
+  streak_count      INTEGER NOT NULL DEFAULT 0,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+
+-- 14. 专注会话表
+CREATE TABLE IF NOT EXISTS focus_sessions (
+  id                  TEXT PRIMARY KEY NOT NULL,
+  start_time          TEXT NOT NULL,
+  end_time            TEXT,
+  duration_seconds    INTEGER NOT NULL DEFAULT 0,
+  type                TEXT NOT NULL DEFAULT 'pomodoro', -- pomodoro/free
+  task_id             TEXT,
+  interrupted         INTEGER NOT NULL DEFAULT 0,
+  interruption_reason TEXT NOT NULL DEFAULT '',
+  created_at          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_focus_sessions_start ON focus_sessions(start_time);
+CREATE INDEX IF NOT EXISTS idx_focus_sessions_task ON focus_sessions(task_id);
+
+-- 15. 用户偏好 KV 表
+CREATE TABLE IF NOT EXISTS user_preferences (
+  key         TEXT PRIMARY KEY NOT NULL,
+  value       TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+
+-- 16. 成就表
+CREATE TABLE IF NOT EXISTS achievements (
+  id          TEXT PRIMARY KEY NOT NULL,
+  title       TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  icon        TEXT NOT NULL DEFAULT '',
+  unlocked    INTEGER NOT NULL DEFAULT 0,
+  unlocked_at TEXT,
+  created_at  TEXT NOT NULL
+);
+
+-- 17. 白噪音音景包表
+CREATE TABLE IF NOT EXISTS soundscape_packs (
+  id          TEXT PRIMARY KEY NOT NULL,
+  name        TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  layers      TEXT NOT NULL DEFAULT '[]',  -- JSON array of {name, file, volume}
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  created_at  TEXT NOT NULL
+);
+
+-- 18. 宠物互动日志表
+CREATE TABLE IF NOT EXISTS pet_interaction_logs (
+  id          TEXT PRIMARY KEY NOT NULL,
+  action      TEXT NOT NULL,  -- feed/play/rest/clean
+  delta       TEXT NOT NULL DEFAULT '{}',  -- JSON of attribute deltas
+  created_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_pet_interaction_logs_created ON pet_interaction_logs(created_at);
+
+-- ============================================================
 -- 默认数据
 -- ============================================================
 
@@ -256,6 +382,10 @@ INSERT OR IGNORE INTO privacy_rules(id, rule_type, pattern, enabled, created_at)
   ('privacy-chrome-ext', 'url',     'chrome-extension://', 1, datetime('now')),
   ('privacy-bank',       'keyword', '*银行*',              1, datetime('now')),
   ('privacy-wechat',     'app',     'WeChat',              1, datetime('now'));
+
+-- 默认宠物状态 (单行, id='default')
+INSERT OR IGNORE INTO pet_state(id, species, level, xp, hunger, energy, happiness, cleanliness, bond_level, mood, last_updated) VALUES
+  ('default', 'cat', 1, 0, 80, 80, 80, 80, 0, 'happy', datetime('now'));
 "#;
 
 /// 在单个事务中执行完整 DDL：建表、索引、FTS5 虚拟表、触发器及默认数据。

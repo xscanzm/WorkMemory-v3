@@ -13,6 +13,8 @@ import Sidebar from './components/Sidebar';
 import TopBar from './components/TopBar';
 import ContextPanel from './components/ContextPanel';
 import MascotWindow from './components/MascotWindow';
+import ErrorBoundary from './components/ErrorBoundary';
+import ToastContainer from './components/Toast';
 import TodayView from './views/TodayView';
 import CalendarView from './views/CalendarView';
 import SearchView from './views/SearchView';
@@ -71,6 +73,7 @@ function MainLayout(): JSX.Element {
         </div>
         <ContextPanel />
       </div>
+      <ToastContainer />
     </div>
   );
 }
@@ -87,7 +90,7 @@ export default function App(): JSX.Element {
         {/* Mascot 透明窗口独立渲染 */}
         <Route path="/mascot" element={<MascotWindow />} />
         {/* 主窗口三栏布局 */}
-        <Route path="/*" element={<MainLayout />} />
+        <Route path="/*" element={<ErrorBoundary><MainLayout /></ErrorBoundary>} />
       </Routes>
     </HashRouter>
   );

@@ -9,6 +9,7 @@
 import { useNavigate } from 'react-router-dom';
 import { Pause, Play, Shield, ShieldOff, Search } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
+import { toast } from '../store/toastStore';
 import { api } from '@/src-tauri/api';
 import type { RecorderState } from '@/types';
 
@@ -55,6 +56,7 @@ function TopBar(): JSX.Element {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('[setRecorderState] 失败', err);
+      toast.error('录制状态切换失败');
     }
   };
 
@@ -66,6 +68,7 @@ function TopBar(): JSX.Element {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('[setRecorderState] 失败', err);
+      toast.error('录制状态切换失败');
     }
   };
 

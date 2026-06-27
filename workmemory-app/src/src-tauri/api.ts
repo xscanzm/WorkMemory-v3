@@ -19,6 +19,7 @@ import type {
   WorkReport,
 } from '@/types';
 import { useAppStore } from '@/store/useAppStore';
+import { toast } from '@/store/toastStore';
 import { invokeMock } from './mock';
 
 /**
@@ -205,6 +206,7 @@ async function refreshTodayEpisodes(): Promise<void> {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('[refreshTodayEpisodes] 拉取失败', err);
+    toast.error('刷新今日数据失败');
   }
 }
 

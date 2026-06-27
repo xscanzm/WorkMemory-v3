@@ -46,6 +46,9 @@ pub fn run() {
                 core::distill::start_hourly_scheduler(app_handle2).await;
             });
 
+            // 启动后台调度器（宠物衰减 / 每日摘要）
+            core::scheduler::start_scheduler(app.handle().clone());
+
             // 注册全部 IPC 命令与事件
             ipc::events::register_event_listeners(app.handle().clone());
             Ok(())
@@ -72,6 +75,20 @@ pub fn run() {
             ipc::commands::get_graph_data,
             ipc::commands::get_episode_by_id,
             ipc::commands::list_mascots,
+            ipc::commands::get_daily_stats,
+            ipc::commands::get_today_stats,
+            ipc::commands::get_pet_state,
+            ipc::commands::save_pet_state,
+            ipc::commands::feed_pet,
+            ipc::commands::play_pet,
+            ipc::commands::rest_pet,
+            ipc::commands::clean_pet,
+            ipc::commands::save_task,
+            ipc::commands::get_all_tasks,
+            ipc::commands::get_task,
+            ipc::commands::update_task,
+            ipc::commands::delete_task,
+            ipc::commands::search_tasks,
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 启动失败");

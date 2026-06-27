@@ -13,6 +13,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import * as ScrollArea from '@radix-ui/react-scroll-area';
 import { Edit3, Check, X, Sparkles } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
+import { toast } from '@/store/toastStore';
 import { api, listen } from '@/src-tauri/api';
 import type { AppSetting, CleanEpisode } from '@/types';
 import MemoryCard from '@/components/MemoryCard';
@@ -63,6 +64,7 @@ export default function TodayView(): JSX.Element {
       .catch((err) => {
         // eslint-disable-next-line no-console
         console.error('[TodayView] getEpisodesByDate 失败', err);
+        toast.error('加载今日数据失败');
         if (!cancelled) setEpisodes([]);
       })
       .finally(() => {

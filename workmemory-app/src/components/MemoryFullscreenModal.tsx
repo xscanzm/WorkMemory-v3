@@ -277,6 +277,7 @@ export default function MemoryFullscreenModal(
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay
+          className="wm-overlay"
           style={{
             position: 'fixed',
             inset: 0,
@@ -287,6 +288,7 @@ export default function MemoryFullscreenModal(
           }}
         />
         <Dialog.Content
+          className="wm-dialog-center"
           aria-label="记忆详情"
           onEscapeKeyDown={(e) => {
             // 编辑态下 Esc 优先取消编辑，不关闭模态

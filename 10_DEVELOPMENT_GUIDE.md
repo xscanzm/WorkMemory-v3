@@ -685,3 +685,67 @@ cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 | `11_TESTING_STRATEGY.md` | 测试策略 |
 | `CHANGELOG.md` | 变更日志 |
 | `analysis_results.md` | 审计报告（驱动 v3 全量实施） |
+
+---
+
+## 8. 文档结构（SSOT 单一真实来源）
+
+本项目遵循 **SSOT（Single Source of Truth，单一真实来源）** 原则：所有规范文档以**根目录**为唯一权威来源，`doc/` 目录下不再保留重复副本。
+
+### 8.1 权威文档清单（根目录）
+
+| 文档 | 用途 |
+|------|------|
+| `00_PRODUCT_VISION.md` | 产品愿景 |
+| `01_ARCHITECTURAL_DECISIONS.md` | 架构决策记录 |
+| `02_DATA_MODEL.md` | 数据模型（8 张表 DDL） |
+| `03_CORE_ARCHITECTURE.md` | 核心架构（8 引擎模块） |
+| `04_UI_SPEC.md` | UI 规范（5-Tab 导航 + 13 组件） |
+| `05_INTERACTION.md` | 交互规范（状态机） |
+| `06_DESIGN_GOVERNANCE.md` | 设计治理（设计系统 / i18n / a11y） |
+| `07_ROADMAP.md` | 路线图 |
+| `08_AI_PROMPTS.md` | AI 提示词 |
+| `09_PRODUCT_ACCEPTANCE_LEDGER.md` | 验收账本 |
+| `10_DEVELOPMENT_GUIDE.md` | 开发指南（本文档） |
+| `11_TESTING_STRATEGY.md` | 测试策略 |
+| `CHANGELOG.md` | 变更日志 |
+| `README.md` | 项目说明 |
+| `analysis_results.md` | 审计报告 |
+
+### 8.2 `doc/` 目录用途
+
+`doc/` 目录仅保留以下两类内容（与根目录无重复）：
+
+- **历史归档文档**：不再维护的旧设计稿、已废弃方案等。
+- **特定主题的深度文档**：独立专题研究、API reference 等，与根目录规范文档不存在重叠。
+
+> 若发现 `doc/` 与根目录存在内容冲突，一律**以根目录文档为准**。新增规范文档应直接放置在根目录，禁止在 `doc/` 下创建重复副本。
+
+### 8.3 SSOT 清理日志（Task 25）
+
+- **清理日期**：2026-06-28
+- **执行 Spec**：`audit-v4-hardening` Task 25（文档 SSOT 清理）
+- **清理原因**：根目录与 `doc/` 目录存在完全重复或过时副本，违反 SSOT 原则，导致维护双份、易产生版本不一致。
+- **采用策略**：策略 A（直接删除 `doc/` 下重复副本，保留根目录权威版本）。
+
+**删除的重复文档（共 15 个，全部位于 `doc/` 目录）**：
+
+| 文件 | 与根目录关系 |
+|------|--------------|
+| `doc/00_PRODUCT_VISION.md` | 完全相同 |
+| `doc/01_ARCHITECTURAL_DECISIONS.md` | 完全相同 |
+| `doc/02_DATA_MODEL.md` | 完全相同 |
+| `doc/03_CORE_ARCHITECTURE.md` | 完全相同 |
+| `doc/04_UI_SPEC.md` | 完全相同 |
+| `doc/05_INTERACTION.md` | 完全相同 |
+| `doc/06_DESIGN_GOVERNANCE.md` | 完全相同 |
+| `doc/07_ROADMAP.md` | 完全相同 |
+| `doc/08_AI_PROMPTS.md` | 完全相同 |
+| `doc/09_PRODUCT_ACCEPTANCE_LEDGER.md` | 完全相同 |
+| `doc/10_DEVELOPMENT_GUIDE.md` | 过时副本（缺少「Windows 构建注意事项」章节，23404B vs 根目录 29129B） |
+| `doc/11_TESTING_STRATEGY.md` | 完全相同 |
+| `doc/CHANGELOG.md` | 过时副本（缺少 Windows 构建/`windows` crate 升级条目，4971B vs 根目录 5488B） |
+| `doc/README.md` | 完全相同 |
+| `doc/analysis_results.md` | 完全相同 |
+
+**保留的文档**：根目录全部 15 个权威文档（见 §8.1 清单）。`doc/` 目录经清理后无独立文档需保留，当前为空，后续仅用于存放历史归档或独立深度文档。

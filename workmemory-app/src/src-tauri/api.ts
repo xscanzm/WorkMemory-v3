@@ -338,6 +338,38 @@ export async function setTagColor(tag: string, color: string): Promise<void> {
   await invoke<void>('set_tag_color', { tag, color });
 }
 
+// ===== Task 21: 批量多选 =====
+
+/** 任务批量更新载荷（与后端 models.rs::TaskBatchUpdate 对齐，camelCase） */
+export interface TaskBatchUpdate {
+  /** true→status='completed'；false→status='todo'（取消完成） */
+  completed?: boolean;
+  /** 'low' / 'medium' / 'high' / 'urgent' / 'none' */
+  priority?: string;
+  /** true→status='archived'；false→status='todo'（取消归档） */
+  archived?: boolean;
+  tags?: string[];
+}
+
+/**
+ * 批量更新任务（事务化，任一失败回滚整个批次）。
+ * 返回受影响行数。对应后端 `batch_update_tasks` IPC 命令。
+ */
+export async function batchUpdateTasks(
+  taskIds: string[],
+  updates: TaskBatchUpdate,
+): Promise<number> {
+  return invoke<number>('batch_update_tasks', { taskIds, updates });
+}
+
+/**
+ * 批量删除任务（事务化，任一失败回滚整个批次）。
+ * 返回受影响行数。对应后端 `batch_delete_tasks` IPC 命令。
+ */
+export async function batchDeleteTasks(taskIds: string[]): Promise<number> {
+  return invoke<number>('batch_delete_tasks', { taskIds });
+}
+
 /**
  * 统一对外暴露的 api 对象。
  */
@@ -382,4 +414,7 @@ export const api = {
   renameTag,
   mergeTags,
   setTagColor,
+  // Task 21
+  batchUpdateTasks,
+  batchDeleteTasks,
 };

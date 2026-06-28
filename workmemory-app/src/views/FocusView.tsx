@@ -20,6 +20,7 @@ import { useFocusStore } from '@/store/focusStore';
 import { useTaskStore } from '@/store/taskStore';
 import { toast } from '@/store/toastStore';
 import SoundscapeMixer from '@/components/SoundscapeMixer';
+import SessionSummaryCard from '@/components/SessionSummaryCard';
 
 /** 专注会话 DTO（与后端 models.rs::FocusSession 对齐，camelCase） */
 interface FocusSession {
@@ -293,12 +294,14 @@ export default function FocusView(): JSX.Element {
   const elapsedSeconds = useFocusStore((s) => s.elapsedSeconds);
   const durationSeconds = useFocusStore((s) => s.durationSeconds);
   const storeMode = useFocusStore((s) => s.mode);
+  const lastSessionId = useFocusStore((s) => s.lastSessionId);
   const startTimer = useFocusStore((s) => s.startTimer);
   const pauseTimer = useFocusStore((s) => s.pauseTimer);
   const resumeTimer = useFocusStore((s) => s.resumeTimer);
   const stopTimer = useFocusStore((s) => s.stopTimer);
   const interruptStore = useFocusStore((s) => s.interrupt);
   const reset = useFocusStore((s) => s.reset);
+  const setLastSessionId = useFocusStore((s) => s.setLastSessionId);
 
   const tasks = useTaskStore((s) => s.tasks);
   const loadTasks = useTaskStore((s) => s.loadTasks);
@@ -317,6 +320,9 @@ export default function FocusView(): JSX.Element {
   // 中断原因输入
   const [interruptOpen, setInterruptOpen] = useState<boolean>(false);
   const [reason, setReason] = useState<string>('');
+
+  // Task 18：专注完成总结卡片
+  const [summaryOpen, setSummaryOpen] = useState<boolean>(false);
 
   // 今日会话
   const [sessions, setSessions] = useState<FocusSession[]>([]);
@@ -383,6 +389,7 @@ export default function FocusView(): JSX.Element {
         plannedDuration: plannedSeconds,
       }).then((s) => s.id);
       sessionIdRef.current = sid;
+      setLastSessionId(sid);
       recordedRef.current = false;
       // 自由计时传 durationSeconds=0（store 不会自动完成）
       startTimer(mode, plannedSeconds, taskId || undefined);
@@ -405,6 +412,8 @@ export default function FocusView(): JSX.Element {
       });
       toast.success('专注完成，已记录');
       await refreshSessions();
+      // Task 18：完成后弹出总结卡片（lastSessionId 仍在 store 中，reset 不清除它）
+      setSummaryOpen(true);
     } catch (err) {
       console.error('[FocusView] 完成专注失败', err);
       // 宠物未初始化时后端用 let _ = 忽略；若仍失败多为 DB 错误，提示用户
@@ -791,6 +800,13 @@ export default function FocusView(): JSX.Element {
           </div>
         )}
       </section>
+
+      {/* Task 18：专注完成总结卡片 */}
+      <SessionSummaryCard
+        sessionId={lastSessionId}
+        open={summaryOpen}
+        onOpenChange={setSummaryOpen}
+      />
     </div>
   );
 }

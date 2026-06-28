@@ -10,7 +10,7 @@
  *
  * 禁止 Tailwind，全部 CSS 变量。
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
 import {
   ArrowUpRight,
@@ -21,13 +21,23 @@ import {
   Plus,
   Save,
   Search,
+  Edit3,
+  Copy,
+  MoveRight,
+  Download,
+  Trash2,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '@/src-tauri/api';
 import { useDebouncedValue } from '@/utils/debounce';
+import { downloadText, timestampForFilename } from '@/utils/download';
+import { toast } from '@/store/toastStore';
 import type { CleanEpisode, WikiPage } from '@/types';
 import { useAsync } from '@/hooks/useAsync';
 import WikiMarkdownEditor from '@/components/WikiMarkdownEditor';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import BatchToolbar from '@/components/BatchToolbar';
+import { ContextMenuWrapper, type ContextMenuItem } from '@/components/ContextMenu';
 
 const WV_CSS = `
 .wv-root { display:flex; flex-direction:column; height:100%; min-height:560px; gap: var(--space-md); }
@@ -52,6 +62,9 @@ const WV_CSS = `
 .wv-list-item[data-active="true"] {
   background: var(--color-primary-soft); color: var(--color-primary);
   border-left-color: var(--color-primary); font-weight:600;
+}
+.wv-list-item[data-selected="true"] {
+  background: var(--color-primary-soft); border-left-color: var(--color-primary);
 }
 .wv-input {
   height:30px; border:1px solid var(--color-border); border-radius: var(--radius-sm);
@@ -132,6 +145,19 @@ function newId(): string {
   return 'wiki-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
 }
 
+/** Wiki 状态中文标签（Task 20 右键菜单"移动到"用） */
+function statusLabel(status: WikiPage['status']): string {
+  switch (status) {
+    case 'published':
+      return '已发布';
+    case 'archived':
+      return '已归档';
+    case 'draft':
+    default:
+      return '草稿';
+  }
+}
+
 export default function WikiView(): JSX.Element {
   const navigate = useNavigate();
 
@@ -146,6 +172,13 @@ export default function WikiView(): JSX.Element {
   const debouncedSearch = useDebouncedValue(search, 300);
   // episodeId -> CleanEpisode，用于 References 来源标题解析
   const [episodeMap, setEpisodeMap] = useState<Record<string, CleanEpisode>>({});
+  // 右键删除二次确认目标（Task 20）
+  const [deleteTarget, setDeleteTarget] = useState<WikiPage | null>(null);
+
+  // Task 21：Wiki 批量多选状态
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const lastClickedIndexRef = useRef<number | null>(null);
+  const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
 
   const allTitles = useMemo(
     () => allWikiPages.map((p) => p.title),
@@ -297,6 +330,215 @@ export default function WikiView(): JSX.Element {
     }, 120);
   };
 
+  // ===== Task 20：Wiki 右键菜单动作处理 =====
+  /** 按 id 更新任意页面（不限于当前页），用于"移动到"等批量场景 */
+  const updatePageById = (id: string, patch: Partial<WikiPage>) => {
+    setAllWikiPages((prev) =>
+      prev.map((p) =>
+        p.id === id ? { ...p, ...patch, updatedAt: new Date().toISOString() } : p,
+      ),
+    );
+  };
+
+  const copyWikiContent = async (page: WikiPage): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(page.content || '');
+      toast.success('已复制内容');
+    } catch {
+      toast.error('复制失败');
+    }
+  };
+
+  const moveWikiPage = (page: WikiPage, status: WikiPage['status']): void => {
+    updatePageById(page.id, { status });
+    toast.success(`已移动到「${statusLabel(status)}」`);
+  };
+
+  const exportWikiPage = (page: WikiPage): void => {
+    const md = `# ${page.title || '未命名'}\n\n${page.content || ''}\n`;
+    downloadText(
+      `wiki-${(page.title || 'untitled').replace(/[^\w\u4e00-\u9fa5-]+/g, '-').slice(0, 32)}-${timestampForFilename()}.md`,
+      md,
+      'text/markdown;charset=utf-8',
+    );
+    toast.success('已导出');
+  };
+
+  const confirmDeleteWiki = (): void => {
+    if (!deleteTarget) return;
+    const id = deleteTarget.id;
+    setAllWikiPages((prev) => prev.filter((p) => p.id !== id));
+    if (currentPageId === id) {
+      const remaining = allWikiPages.filter((p) => p.id !== id);
+      setCurrentPageId(remaining[0]?.id ?? null);
+    }
+    toast.success('已删除');
+    setDeleteTarget(null);
+  };
+
+  /** 构建单个 Wiki 页面的右键菜单项 */
+  const buildWikiMenuItems = (page: WikiPage): ContextMenuItem[] => [
+    {
+      type: 'action',
+      label: '编辑',
+      icon: <Edit3 size={14} />,
+      onSelect: () => setCurrentPageId(page.id),
+    },
+    {
+      type: 'action',
+      label: '复制内容',
+      icon: <Copy size={14} />,
+      onSelect: () => void copyWikiContent(page),
+    },
+    {
+      type: 'submenu',
+      label: '移动到...',
+      icon: <MoveRight size={14} />,
+      items: [
+        {
+          type: 'action',
+          label: '草稿',
+          icon: page.status === 'draft' ? <Check size={14} /> : undefined,
+          onSelect: () => moveWikiPage(page, 'draft'),
+        },
+        {
+          type: 'action',
+          label: '已发布',
+          icon: page.status === 'published' ? <Check size={14} /> : undefined,
+          onSelect: () => moveWikiPage(page, 'published'),
+        },
+        {
+          type: 'action',
+          label: '已归档',
+          icon: page.status === 'archived' ? <Check size={14} /> : undefined,
+          onSelect: () => moveWikiPage(page, 'archived'),
+        },
+      ],
+    },
+    {
+      type: 'action',
+      label: '导出 Markdown',
+      icon: <Download size={14} />,
+      onSelect: () => exportWikiPage(page),
+    },
+    { type: 'separator' },
+    {
+      type: 'action',
+      label: '删除',
+      icon: <Trash2 size={14} />,
+      danger: true,
+      onSelect: () => setDeleteTarget(page),
+    },
+  ];
+
+  // ===== Task 21：Wiki 批量多选交互 =====
+  /**
+   * Wiki 列表项点击：根据修饰键决定行为
+   *   - Shift+Click：范围选择
+   *   - Ctrl/Cmd+Click：toggle 单个
+   *   - 普通点击：已有选中则清空；无选中则切换当前页
+   */
+  const handleWikiClick = (e: React.MouseEvent, page: WikiPage, index: number): void => {
+    if (e.shiftKey && lastClickedIndexRef.current !== null) {
+      const start = Math.min(lastClickedIndexRef.current, index);
+      const end = Math.max(lastClickedIndexRef.current, index);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        for (let i = start; i <= end; i++) {
+          const id = filteredPages[i]?.id;
+          if (id) next.add(id);
+        }
+        return next;
+      });
+      return;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(page.id)) {
+          next.delete(page.id);
+        } else {
+          next.add(page.id);
+        }
+        return next;
+      });
+      lastClickedIndexRef.current = index;
+      return;
+    }
+    if (selectedIds.size > 0) {
+      setSelectedIds(new Set());
+      lastClickedIndexRef.current = null;
+      return;
+    }
+    lastClickedIndexRef.current = index;
+    setCurrentPageId(page.id);
+  };
+
+  const handleSelectAll = (): void => {
+    if (selectedIds.size === filteredPages.length && filteredPages.length > 0) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(filteredPages.map((p) => p.id)));
+    }
+  };
+
+  const handleClearSelection = (): void => {
+    setSelectedIds(new Set());
+    lastClickedIndexRef.current = null;
+  };
+
+  const allSelected =
+    filteredPages.length > 0 && selectedIds.size === filteredPages.length;
+
+  /** 批量发布：将选中页面状态置为 published（客户端循环更新） */
+  const handleBatchPublish = (): void => {
+    if (selectedIds.size === 0) return;
+    let count = 0;
+    setAllWikiPages((prev) =>
+      prev.map((p) => {
+        if (selectedIds.has(p.id) && p.status !== 'published') {
+          count += 1;
+          return { ...p, status: 'published', updatedAt: new Date().toISOString() };
+        }
+        return p;
+      }),
+    );
+    toast.success(`已发布 ${count} 项`);
+    handleClearSelection();
+  };
+
+  /** 批量导出：合并选中页面为单个 Markdown 文件 */
+  const handleBatchExport = (): void => {
+    const selected = allWikiPages.filter((p) => selectedIds.has(p.id));
+    if (selected.length === 0) return;
+    const parts = selected.map(
+      (p) => `# ${p.title || '未命名'}\n\n${p.content || ''}\n`,
+    );
+    downloadText(
+      `wiki-batch-${timestampForFilename()}.md`,
+      parts.join('\n---\n\n'),
+      'text/markdown;charset=utf-8',
+    );
+    toast.success('已导出');
+  };
+
+  const handleBatchDeleteClick = (): void => {
+    if (selectedIds.size === 0) return;
+    setBatchDeleteOpen(true);
+  };
+
+  const confirmBatchDelete = (): void => {
+    setAllWikiPages((prev) => prev.filter((p) => !selectedIds.has(p.id)));
+    // 若当前页被删除，切到剩余第一页
+    if (currentPageId && selectedIds.has(currentPageId)) {
+      const remaining = allWikiPages.filter((p) => !selectedIds.has(p.id));
+      setCurrentPageId(remaining[0]?.id ?? null);
+    }
+    toast.success(`已删除 ${selectedIds.size} 项`);
+    handleClearSelection();
+    setBatchDeleteOpen(false);
+  };
+
   return (
     <div className="wv-root">
       <style>{WV_CSS}</style>
@@ -375,6 +617,19 @@ export default function WikiView(): JSX.Element {
             : '所有建议已处理'}
         </div>
       </div>
+
+      {/* Task 21：Wiki 批量多选工具条（选中数 > 0 时显示） */}
+      {selectedIds.size > 0 && (
+        <BatchToolbar
+          selectedCount={selectedIds.size}
+          allSelected={allSelected}
+          onSelectAll={handleSelectAll}
+          onClearSelection={handleClearSelection}
+          onPublish={handleBatchPublish}
+          onExport={handleBatchExport}
+          onDelete={handleBatchDeleteClick}
+        />
+      )}
 
       {/* ===== 三栏主体 ===== */}
       <div className="wv-grid">
@@ -457,16 +712,18 @@ export default function WikiView(): JSX.Element {
                     暂无匹配页面
                   </div>
                 ) : (
-                  filteredPages.map((p) => (
-                    <div
-                      key={p.id}
-                      className="wv-list-item"
-                      data-active={p.id === currentPageId ? 'true' : 'false'}
-                      onClick={() => setCurrentPageId(p.id)}
-                      title={p.title || '未命名'}
-                    >
-                      {p.title || '未命名'}
-                    </div>
+                  filteredPages.map((p, index) => (
+                    <ContextMenuWrapper key={p.id} items={buildWikiMenuItems(p)}>
+                      <div
+                        className="wv-list-item list-item-enter"
+                        data-active={p.id === currentPageId ? 'true' : 'false'}
+                        data-selected={selectedIds.has(p.id) ? 'true' : 'false'}
+                        onClick={(e) => handleWikiClick(e, p, index)}
+                        title={p.title || '未命名'}
+                      >
+                        {p.title || '未命名'}
+                      </div>
+                    </ContextMenuWrapper>
                   ))
                 )}
               </div>
@@ -652,6 +909,27 @@ export default function WikiView(): JSX.Element {
           </>
         )}
       </div>
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="删除 Wiki 页面"
+        message={`确认删除「${deleteTarget?.title ?? ''}」？此操作不可撤销。`}
+        confirmText="删除"
+        danger
+        onConfirm={confirmDeleteWiki}
+        onCancel={() => setDeleteTarget(null)}
+      />
+
+      {/* Task 21：批量删除二次确认 */}
+      <ConfirmDialog
+        open={batchDeleteOpen}
+        title="批量删除 Wiki 页面"
+        message={`确认删除选中的 ${selectedIds.size} 项页面？此操作不可撤销。`}
+        confirmText="删除"
+        danger
+        onConfirm={confirmBatchDelete}
+        onCancel={() => setBatchDeleteOpen(false)}
+      />
     </div>
   );
 }

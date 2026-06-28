@@ -115,6 +115,7 @@ pub fn run() {
             ipc::commands::complete_focus_session,
             ipc::commands::interrupt_focus_session,
             ipc::commands::get_today_focus_sessions,
+            ipc::commands::get_session_summary,
             ipc::commands::get_soundscape_packs,
             ipc::commands::get_all_soundscape_packs,
             ipc::commands::toggle_soundscape_pack,
@@ -140,6 +141,9 @@ pub fn run() {
             ipc::commands::rename_tag,
             ipc::commands::merge_tags,
             ipc::commands::set_tag_color,
+            // Task 21: 批量多选
+            ipc::commands::batch_update_tasks,
+            ipc::commands::batch_delete_tasks,
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 启动失败");

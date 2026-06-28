@@ -538,6 +538,13 @@ export const invokeMock = async (command: string, args?: any): Promise<any> => {
     case 'set_tag_color':
       return null;
 
+    // Task 21: 批量多选（mock 返回 taskIds 长度，模拟成功）
+    case 'batch_update_tasks':
+      return (args?.taskIds as string[] | undefined)?.length ?? 0;
+
+    case 'batch_delete_tasks':
+      return (args?.taskIds as string[] | undefined)?.length ?? 0;
+
     default:
       // 未知命令返回 null，避免阻塞 UI
       // eslint-disable-next-line no-console

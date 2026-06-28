@@ -19,6 +19,8 @@ interface FocusState {
     elapsedSeconds: number;  // 已计时
     taskId: string | null;
     interruptionReason: string | null;
+    /** 最近一次专注会话的后端 id（Task 18 - SessionSummaryCard 数据来源） */
+    lastSessionId: string | null;
 
     startTimer: (mode: FocusMode, durationSeconds: number, taskId?: string) => void;
     tick: () => void;
@@ -27,6 +29,7 @@ interface FocusState {
     stopTimer: () => void; // 标记完成
     interrupt: (reason: string) => void;
     reset: () => void;
+    setLastSessionId: (id: string | null) => void;
 }
 
 // 模块级 ticker 句柄：interval id 与 UI 无关，不放入 state（不可序列化）
@@ -53,6 +56,7 @@ export const useFocusStore = create<FocusState>((set, get) => ({
     elapsedSeconds: 0,
     taskId: null,
     interruptionReason: null,
+    lastSessionId: null,
 
     startTimer: (mode, durationSeconds, taskId) => {
         set({
@@ -64,6 +68,10 @@ export const useFocusStore = create<FocusState>((set, get) => ({
             interruptionReason: null,
         });
         startTicker();
+    },
+
+    setLastSessionId: (id) => {
+        set({ lastSessionId: id });
     },
 
     tick: () => {

@@ -936,6 +936,19 @@ pub fn get_today_focus_sessions(app: tauri::AppHandle) -> Result<Vec<models::Foc
     focus_engine::get_today_focus_sessions(&conn).map_err(|e| e.to_string())
 }
 
+/// 获取专注会话总结（Task 18 - SessionSummaryCard）。
+/// 聚合 segments / tasks / achievements 表数据，返回应用时长分布、注意力流失点、
+/// 关联任务与本次解锁成就。
+#[tauri::command]
+pub async fn get_session_summary(
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<models::SessionSummary, String> {
+    let pool = app.state::<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>>();
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    focus_engine::build_session_summary(&conn, &session_id).map_err(|e| e.to_string())
+}
+
 // ============================================================
 // 音景包 (core::soundscape_engine)
 // ============================================================
@@ -1258,4 +1271,67 @@ pub async fn set_tag_color(
     let pool = app.state::<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>>();
     let conn = pool.get().map_err(|e| e.to_string())?;
     repository::set_tag_color(&conn, &tag, &color).map_err(|e| e.to_string())
+}
+
+// ============================================================
+// 批量多选 (Task 21 - BatchToolbar + batch IPC)
+// ============================================================
+
+/// 校验批量操作的 task_ids 列表：非空、≤100、每项为合法 UUID。
+/// 错误统一返回 String 以匹配 IPC 命令签名。
+fn validate_batch_ids(task_ids: &[String]) -> Result<(), String> {
+    if task_ids.is_empty() {
+        return Err("task_ids 不能为空".to_string());
+    }
+    if task_ids.len() > 100 {
+        return Err(format!(
+            "批量操作一次最多 100 项，当前: {}",
+            task_ids.len()
+        ));
+    }
+    for id in task_ids {
+        validator::validate_uuid(id).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// 批量更新任务（事务化，任一失败回滚整个批次）。
+///
+/// 校验：task_ids 非空且 ≤100，每个为合法 UUID；updates 至少设置一个字段。
+/// 返回受影响行数。
+#[tauri::command]
+pub async fn batch_update_tasks(
+    app: tauri::AppHandle,
+    task_ids: Vec<String>,
+    updates: models::TaskBatchUpdate,
+) -> Result<i64, String> {
+    validate_batch_ids(&task_ids)?;
+    // 至少一个字段被设置
+    let has_field = updates.completed.is_some()
+        || updates.priority.is_some()
+        || updates.archived.is_some()
+        || updates.tags.is_some();
+    if !has_field {
+        return Err("updates 至少需要设置一个字段（completed/priority/archived/tags）".to_string());
+    }
+
+    let pool = app.state::<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>>();
+    let mut conn = pool.get().map_err(|e| e.to_string())?;
+    task_engine::batch_update_tasks(&mut conn, &task_ids, &updates)
+        .map_err(|e| e.to_string())
+}
+
+/// 批量删除任务（事务化，任一失败回滚整个批次）。
+///
+/// 校验：task_ids 非空且 ≤100，每个为合法 UUID。返回受影响行数。
+#[tauri::command]
+pub async fn batch_delete_tasks(
+    app: tauri::AppHandle,
+    task_ids: Vec<String>,
+) -> Result<i64, String> {
+    validate_batch_ids(&task_ids)?;
+
+    let pool = app.state::<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>>();
+    let mut conn = pool.get().map_err(|e| e.to_string())?;
+    task_engine::batch_delete_tasks(&mut conn, &task_ids).map_err(|e| e.to_string())
 }

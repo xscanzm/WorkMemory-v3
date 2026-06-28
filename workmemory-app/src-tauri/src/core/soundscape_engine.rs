@@ -153,4 +153,63 @@ mod tests {
         let cafe = packs.iter().find(|p| p.id == "p2").unwrap();
         assert_eq!(cafe.layers.len(), 0);
     }
+
+    // ---- 补充测试：排序 / 空层数组 / 切换排除 ----
+
+    #[test]
+    fn multiple_packs_sorted_by_name_asc() {
+        let conn = in_memory_db();
+        conn.execute(
+            "INSERT INTO soundscape_packs (id, name, description, layers, enabled, created_at) VALUES ('p3', 'Zebra', '', '[]', 1, '')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO soundscape_packs (id, name, description, layers, enabled, created_at) VALUES ('p1', 'Alpha', '', '[]', 1, '')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO soundscape_packs (id, name, description, layers, enabled, created_at) VALUES ('p2', 'Middle', '', '[]', 1, '')",
+            [],
+        )
+        .unwrap();
+        let packs = get_all_soundscape_packs(&conn).unwrap();
+        assert_eq!(packs.len(), 3);
+        assert_eq!(packs[0].name, "Alpha");
+        assert_eq!(packs[1].name, "Middle");
+        assert_eq!(packs[2].name, "Zebra");
+    }
+
+    #[test]
+    fn empty_layers_json_parses_to_empty_vec() {
+        let conn = in_memory_db();
+        conn.execute(
+            "INSERT INTO soundscape_packs (id, name, description, layers, enabled, created_at) VALUES ('p1', 'Rain', '', '[]', 1, '')",
+            [],
+        )
+        .unwrap();
+        let packs = get_soundscape_packs(&conn).unwrap();
+        assert_eq!(packs.len(), 1);
+        assert_eq!(packs[0].layers.len(), 0);
+    }
+
+    #[test]
+    fn toggle_off_excludes_from_enabled_list() {
+        let conn = in_memory_db();
+        conn.execute(
+            "INSERT INTO soundscape_packs (id, name, description, layers, enabled, created_at) VALUES ('p1', 'Rain', '', '[]', 1, '')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO soundscape_packs (id, name, description, layers, enabled, created_at) VALUES ('p2', 'Cafe', '', '[]', 1, '')",
+            [],
+        )
+        .unwrap();
+        toggle_soundscape_pack(&conn, "p1", false).unwrap();
+        let enabled = get_soundscape_packs(&conn).unwrap();
+        assert_eq!(enabled.len(), 1);
+        assert_eq!(enabled[0].name, "Cafe");
+    }
 }

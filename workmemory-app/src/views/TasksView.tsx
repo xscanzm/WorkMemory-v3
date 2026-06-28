@@ -24,13 +24,30 @@ import {
   arrayMove,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { GripVertical } from 'lucide-react';
+import {
+  GripVertical,
+  Pencil,
+  Check,
+  Pin,
+  Archive,
+  Copy,
+  Download,
+  Trash2,
+  FileJson,
+  FileText,
+} from 'lucide-react';
 import { useTaskStore } from '../store/taskStore';
 import type { Task } from '../store/taskStore';
+import { toast } from '../store/toastStore';
 import { useDebouncedValue } from '../utils/debounce';
+import { downloadText, timestampForFilename } from '../utils/download';
+import { batchUpdateTasks, batchDeleteTasks } from '../src-tauri/api';
 import TaskCard from '../components/TaskCard';
 import TaskForm from '../components/TaskForm';
 import FAB from '../components/FAB';
+import ConfirmDialog from '../components/ConfirmDialog';
+import BatchToolbar from '../components/BatchToolbar';
+import { ContextMenuWrapper, type ContextMenuItem } from '../components/ContextMenu';
 
 type StatusFilter = 'all' | Task['status'];
 
@@ -59,6 +76,15 @@ export default function TasksView(): JSX.Element {
   const [searchResults, setSearchResults] = useState<Task[] | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
+  // 右键删除二次确认目标（Task 20）
+  const [deleteTarget, setDeleteTarget] = useState<Task | null>(null);
+
+  // Task 21：批量多选状态
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // Shift+Click 范围选择的上次点击索引锚点
+  const lastClickedIndexRef = useRef<number | null>(null);
+  // 批量删除二次确认（与单条删除 deleteTarget 区分）
+  const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
 
   // 挂载时确保任务数据已加载（App 启动亦会加载，此处保证视图自洽）
   useEffect(() => {
@@ -129,6 +155,259 @@ export default function TasksView(): JSX.Element {
     setFormOpen(true);
   };
 
+  // ===== Task 20：右键菜单动作处理 =====
+  const toggleComplete = (task: Task): void => {
+    const next = task.status === 'completed' ? 'todo' : 'completed';
+    void useTaskStore.getState().updateTask({ ...task, status: next });
+    toast.success(next === 'completed' ? '已标记完成' : '已取消完成');
+  };
+
+  const togglePin = (task: Task): void => {
+    void useTaskStore.getState().updateTask({ ...task, isPinned: !task.isPinned });
+    toast.success(task.isPinned ? '已取消置顶' : '已置顶');
+  };
+
+  const toggleArchive = (task: Task): void => {
+    const next = task.status === 'archived' ? 'todo' : 'archived';
+    void useTaskStore.getState().updateTask({ ...task, status: next });
+    toast.success(next === 'archived' ? '已归档' : '已取消归档');
+  };
+
+  const copyTitle = async (task: Task): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(task.title);
+      toast.success('已复制标题');
+    } catch {
+      toast.error('复制失败');
+    }
+  };
+
+  const exportTask = (task: Task, format: 'md' | 'json'): void => {
+    if (format === 'md') {
+      const lines: string[] = [
+        `# ${task.title}`,
+        '',
+        `- **状态**: ${task.status}`,
+        `- **优先级**: ${task.priority}`,
+        `- **分类**: ${task.category || '无'}`,
+        task.dueDate ? `- **到期**: ${task.dueDate}` : null,
+        task.tags.length ? `- **标签**: ${task.tags.map((t) => `#${t}`).join(' ')}` : null,
+        '',
+        '## 描述',
+        '',
+        task.description || '（无描述）',
+      ].filter((line): line is string => Boolean(line));
+      downloadText(
+        `task-${task.id.slice(0, 8)}-${timestampForFilename()}.md`,
+        lines.join('\n') + '\n',
+        'text/markdown;charset=utf-8',
+      );
+    } else {
+      downloadText(
+        `task-${task.id.slice(0, 8)}-${timestampForFilename()}.json`,
+        JSON.stringify(task, null, 2),
+        'application/json;charset=utf-8',
+      );
+    }
+    toast.success('已导出');
+  };
+
+  const confirmDelete = (): void => {
+    if (!deleteTarget) return;
+    void useTaskStore.getState().deleteTask(deleteTarget.id);
+    setDeleteTarget(null);
+  };
+
+  /** 构建单个 Task 的右键菜单项 */
+  const buildTaskMenuItems = (task: Task): ContextMenuItem[] => [
+    { type: 'action', label: '编辑', icon: <Pencil size={14} />, onSelect: () => openEdit(task) },
+    {
+      type: 'action',
+      label: task.status === 'completed' ? '取消完成' : '标记完成',
+      icon: <Check size={14} />,
+      onSelect: () => toggleComplete(task),
+    },
+    {
+      type: 'action',
+      label: task.isPinned ? '取消置顶' : '置顶',
+      icon: <Pin size={14} />,
+      onSelect: () => togglePin(task),
+    },
+    {
+      type: 'action',
+      label: task.status === 'archived' ? '取消归档' : '归档',
+      icon: <Archive size={14} />,
+      onSelect: () => toggleArchive(task),
+    },
+    { type: 'action', label: '复制标题', icon: <Copy size={14} />, onSelect: () => void copyTitle(task) },
+    {
+      type: 'submenu',
+      label: '导出',
+      icon: <Download size={14} />,
+      items: [
+        { type: 'action', label: 'Markdown', icon: <FileText size={14} />, onSelect: () => exportTask(task, 'md') },
+        { type: 'action', label: 'JSON', icon: <FileJson size={14} />, onSelect: () => exportTask(task, 'json') },
+      ],
+    },
+    { type: 'separator' },
+    {
+      type: 'action',
+      label: '删除',
+      icon: <Trash2 size={14} />,
+      danger: true,
+      onSelect: () => setDeleteTarget(task),
+    },
+  ];
+
+  // ===== Task 21：批量多选交互 =====
+  /**
+   * 任务卡片点击：根据修饰键决定行为
+   *   - Shift+Click：从上次点击项到当前项范围全选
+   *   - Ctrl/Cmd+Click：toggle 单个选中
+   *   - 普通点击：已有选中则清空选中；无选中则打开编辑
+   *
+   * 注意：与 TaskCard 的滑动手势（Task 23.6）正交——滑动是水平拖拽，
+   * 点击是 pointerup 且无显著位移，不会触发选择逻辑。
+   */
+  const handleTaskClick = (e: React.MouseEvent, task: Task, index: number): void => {
+    // Shift+Click：范围选择（保留已有选中，叠加范围）
+    if (e.shiftKey && lastClickedIndexRef.current !== null) {
+      const start = Math.min(lastClickedIndexRef.current, index);
+      const end = Math.max(lastClickedIndexRef.current, index);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        for (let i = start; i <= end; i++) {
+          const id = visibleTasks[i]?.id;
+          if (id) next.add(id);
+        }
+        return next;
+      });
+      return;
+    }
+    // Ctrl/Cmd+Click：toggle 单个
+    if (e.ctrlKey || e.metaKey) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(task.id)) {
+          next.delete(task.id);
+        } else {
+          next.add(task.id);
+        }
+        return next;
+      });
+      lastClickedIndexRef.current = index;
+      return;
+    }
+    // 普通点击：已有选中 → 清空；无选中 → 打开编辑
+    if (selectedIds.size > 0) {
+      setSelectedIds(new Set());
+      lastClickedIndexRef.current = null;
+      return;
+    }
+    lastClickedIndexRef.current = index;
+    openEdit(task);
+  };
+
+  const handleSelectAll = (): void => {
+    if (selectedIds.size === visibleTasks.length && visibleTasks.length > 0) {
+      // 已全选 → 取消全选
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(visibleTasks.map((t) => t.id)));
+    }
+  };
+
+  const handleClearSelection = (): void => {
+    setSelectedIds(new Set());
+    lastClickedIndexRef.current = null;
+  };
+
+  const allSelected =
+    visibleTasks.length > 0 && selectedIds.size === visibleTasks.length;
+
+  /** 批量完成：调用 batch_update_tasks({ completed: true }) */
+  const handleBatchComplete = async (): Promise<void> => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    try {
+      const affected = await batchUpdateTasks(ids, { completed: true });
+      toast.success(`已完成 ${affected} 项`);
+      handleClearSelection();
+      await loadTasks();
+    } catch (err) {
+      toast.error('批量完成失败');
+      // eslint-disable-next-line no-console
+      console.error('[TasksView] batch complete failed', err);
+    }
+  };
+
+  /** 批量归档：调用 batch_update_tasks({ archived: true }) */
+  const handleBatchArchive = async (): Promise<void> => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    try {
+      const affected = await batchUpdateTasks(ids, { archived: true });
+      toast.success(`已归档 ${affected} 项`);
+      handleClearSelection();
+      await loadTasks();
+    } catch (err) {
+      toast.error('批量归档失败');
+      // eslint-disable-next-line no-console
+      console.error('[TasksView] batch archive failed', err);
+    }
+  };
+
+  /** 批量删除：先弹二次确认，确认后调用 batch_delete_tasks */
+  const handleBatchDeleteClick = (): void => {
+    setBatchDeleteOpen(true);
+  };
+
+  const confirmBatchDelete = async (): Promise<void> => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) {
+      setBatchDeleteOpen(false);
+      return;
+    }
+    try {
+      const affected = await batchDeleteTasks(ids);
+      toast.success(`已删除 ${affected} 项`);
+      handleClearSelection();
+      setBatchDeleteOpen(false);
+      await loadTasks();
+    } catch (err) {
+      toast.error('批量删除失败');
+      // eslint-disable-next-line no-console
+      console.error('[TasksView] batch delete failed', err);
+      setBatchDeleteOpen(false);
+    }
+  };
+
+  /** 批量导出：将选中任务合并导出为单个 Markdown 文件 */
+  const handleBatchExport = (): void => {
+    const selected = visibleTasks.filter((t) => selectedIds.has(t.id));
+    if (selected.length === 0) return;
+    const lines: string[] = [`# 任务批量导出（${selected.length} 项）`, ''];
+    selected.forEach((task, idx) => {
+      lines.push(`## ${idx + 1}. ${task.title}`, '');
+      lines.push(
+        `- **状态**: ${task.status}`,
+        `- **优先级**: ${task.priority}`,
+        `- **分类**: ${task.category || '无'}`,
+      );
+      if (task.dueDate) lines.push(`- **到期**: ${task.dueDate}`);
+      if (task.tags.length) {
+        lines.push(`- **标签**: ${task.tags.map((t) => `#${t}`).join(' ')}`);
+      }
+      lines.push('', '### 描述', '', task.description || '（无描述）', '');
+    });
+    downloadText(
+      `tasks-batch-${timestampForFilename()}.md`,
+      lines.join('\n') + '\n',
+      'text/markdown;charset=utf-8',
+    );
+    toast.success('已导出');
+  };
+
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       {/* 头部：标题 + 筛选 + 搜索 */}
@@ -179,6 +458,20 @@ export default function TasksView(): JSX.Element {
         />
       </header>
 
+      {/* Task 21：批量多选工具条（选中数 > 0 时显示） */}
+      {selectedIds.size > 0 && (
+        <BatchToolbar
+          selectedCount={selectedIds.size}
+          allSelected={allSelected}
+          onSelectAll={handleSelectAll}
+          onClearSelection={handleClearSelection}
+          onComplete={handleBatchComplete}
+          onArchive={handleBatchArchive}
+          onExport={handleBatchExport}
+          onDelete={handleBatchDeleteClick}
+        />
+      )}
+
       {/* 列表区域（内部滚动，避免与外层 main 双滚动条） */}
       <div ref={scrollContainerRef} style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
         {isLoading && tasks.length === 0 ? (
@@ -201,6 +494,7 @@ export default function TasksView(): JSX.Element {
           >
             {virtualizer.getVirtualItems().map((virtualRow) => {
               const task = visibleTasks[virtualRow.index];
+              const selected = selectedIds.has(task.id);
               return (
                 <div
                   key={task.id}
@@ -215,7 +509,14 @@ export default function TasksView(): JSX.Element {
                     marginBottom: 'var(--space-md)',
                   }}
                 >
-                  <TaskCard task={task} onEdit={openEdit} />
+                  <ContextMenuWrapper items={buildTaskMenuItems(task)}>
+                    <div
+                      onClick={(e) => handleTaskClick(e, task, virtualRow.index)}
+                      style={cardWrapperStyle(selected)}
+                    >
+                      <TaskCard task={task} onEdit={openEdit} />
+                    </div>
+                  </ContextMenuWrapper>
                 </div>
               );
             })}
@@ -238,8 +539,15 @@ export default function TasksView(): JSX.Element {
                   paddingBottom: 80,
                 }}
               >
-                {visibleTasks.map((task) => (
-                  <SortableTaskCard key={task.id} task={task} onEdit={openEdit} />
+                {visibleTasks.map((task, index) => (
+                  <SortableTaskCard
+                    key={task.id}
+                    task={task}
+                    onEdit={openEdit}
+                    menuItems={buildTaskMenuItems(task)}
+                    selected={selectedIds.has(task.id)}
+                    onClick={(e) => handleTaskClick(e, task, index)}
+                  />
                 ))}
               </div>
             </SortableContext>
@@ -253,8 +561,16 @@ export default function TasksView(): JSX.Element {
               paddingBottom: 80,
             }}
           >
-            {visibleTasks.map((task) => (
-              <TaskCard key={task.id} task={task} onEdit={openEdit} />
+            {visibleTasks.map((task, index) => (
+              <ContextMenuWrapper key={task.id} items={buildTaskMenuItems(task)}>
+                <div
+                  className="list-item-enter"
+                  onClick={(e) => handleTaskClick(e, task, index)}
+                  style={cardWrapperStyle(selectedIds.has(task.id))}
+                >
+                  <TaskCard task={task} onEdit={openEdit} />
+                </div>
+              </ContextMenuWrapper>
             ))}
           </div>
         )}
@@ -263,6 +579,27 @@ export default function TasksView(): JSX.Element {
       <FAB onClick={openCreate} />
 
       <TaskForm open={formOpen} task={editingTask} onClose={() => setFormOpen(false)} />
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="删除任务"
+        message={`确认删除「${deleteTarget?.title ?? ''}」？此操作不可撤销。`}
+        confirmText="删除"
+        danger
+        onConfirm={confirmDelete}
+        onCancel={() => setDeleteTarget(null)}
+      />
+
+      {/* Task 21：批量删除二次确认 */}
+      <ConfirmDialog
+        open={batchDeleteOpen}
+        title="批量删除任务"
+        message={`确认删除选中的 ${selectedIds.size} 项任务？此操作不可撤销。`}
+        confirmText="删除"
+        danger
+        onConfirm={() => void confirmBatchDelete()}
+        onCancel={() => setBatchDeleteOpen(false)}
+      />
     </div>
   );
 }
@@ -273,13 +610,20 @@ export default function TasksView(): JSX.Element {
  *
  * - 使用专用拖拽手柄（⠿）承载 dnd-kit listeners，避免与 TaskCard 卡体滑动手势（Task 23.6）冲突
  * - 手柄与卡体并排；拖拽时整体降透明度并提升层级
+ * - Task 21：透传 selected / onClick 用于批量多选
  */
 function SortableTaskCard({
   task,
   onEdit,
+  menuItems,
+  selected,
+  onClick,
 }: {
   task: Task;
   onEdit: (task: Task) => void;
+  menuItems: ContextMenuItem[];
+  selected: boolean;
+  onClick: (e: React.MouseEvent) => void;
 }): JSX.Element {
   const {
     attributes,
@@ -325,11 +669,34 @@ function SortableTaskCard({
       >
         <GripVertical size={14} />
       </button>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <TaskCard task={task} onEdit={onEdit} />
-      </div>
+      <ContextMenuWrapper items={menuItems}>
+        <div
+          className="list-item-enter"
+          onClick={onClick}
+          style={{ ...cardWrapperStyle(selected), flex: 1, minWidth: 0 }}
+        >
+          <TaskCard task={task} onEdit={onEdit} />
+        </div>
+      </ContextMenuWrapper>
     </div>
   );
+}
+
+/**
+ * Task 21：批量选中卡片的包装样式
+ * 选中时左侧主色边框高亮 + 淡色背景，提示用户当前在批量选择态。
+ */
+function cardWrapperStyle(selected: boolean): React.CSSProperties {
+  return {
+    borderLeft: selected
+      ? '3px solid var(--color-primary)'
+      : '3px solid transparent',
+    background: selected ? 'var(--color-primary-soft)' : 'transparent',
+    borderRadius: 'var(--radius-md)',
+    cursor: 'pointer',
+    transition:
+      'background var(--duration-fast) var(--ease-out-expo), border-color var(--duration-fast) var(--ease-out-expo)',
+  };
 }
 
 function chipStyle(active: boolean): React.CSSProperties {

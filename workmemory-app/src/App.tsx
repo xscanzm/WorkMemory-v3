@@ -82,21 +82,22 @@ function MainLayout(): JSX.Element {
           >
             <Routes>
               {/* 主导航 5-Tab：仪表盘/任务/专注/宠物（Task 11 仪表盘已实现） */}
-              <Route path="/home" element={<ViewErrorBoundary><HomeView /></ViewErrorBoundary>} />
-              <Route path="/tasks" element={<ViewErrorBoundary><TasksView /></ViewErrorBoundary>} />
-              <Route path="/focus" element={<ViewErrorBoundary><FocusView /></ViewErrorBoundary>} />
-              <Route path="/pet" element={<ViewErrorBoundary><PetView /></ViewErrorBoundary>} />
+              {/* Task 22：视图切换 300ms ease-out 过渡，view-transition 在 mount 时自动播放 */}
+              <Route path="/home" element={<div className="view-transition"><ViewErrorBoundary><HomeView /></ViewErrorBoundary></div>} />
+              <Route path="/tasks" element={<div className="view-transition"><ViewErrorBoundary><TasksView /></ViewErrorBoundary></div>} />
+              <Route path="/focus" element={<div className="view-transition"><ViewErrorBoundary><FocusView /></ViewErrorBoundary></div>} />
+              <Route path="/pet" element={<div className="view-transition"><ViewErrorBoundary><PetView /></ViewErrorBoundary></div>} />
               {/* 记忆子导航路由（保留） */}
-              <Route path="/today" element={<ViewErrorBoundary><TodayView /></ViewErrorBoundary>} />
-              <Route path="/calendar" element={<ViewErrorBoundary><CalendarView /></ViewErrorBoundary>} />
-              <Route path="/search" element={<ViewErrorBoundary><SearchView /></ViewErrorBoundary>} />
-              <Route path="/insights" element={<ViewErrorBoundary><InsightsView /></ViewErrorBoundary>} />
-              <Route path="/wiki" element={<ViewErrorBoundary><WikiView /></ViewErrorBoundary>} />
-              <Route path="/graph" element={<ViewErrorBoundary><GraphView /></ViewErrorBoundary>} />
-              <Route path="/reports" element={<ViewErrorBoundary><ReportsView /></ViewErrorBoundary>} />
+              <Route path="/today" element={<div className="view-transition"><ViewErrorBoundary><TodayView /></ViewErrorBoundary></div>} />
+              <Route path="/calendar" element={<div className="view-transition"><ViewErrorBoundary><CalendarView /></ViewErrorBoundary></div>} />
+              <Route path="/search" element={<div className="view-transition"><ViewErrorBoundary><SearchView /></ViewErrorBoundary></div>} />
+              <Route path="/insights" element={<div className="view-transition"><ViewErrorBoundary><InsightsView /></ViewErrorBoundary></div>} />
+              <Route path="/wiki" element={<div className="view-transition"><ViewErrorBoundary><WikiView /></ViewErrorBoundary></div>} />
+              <Route path="/graph" element={<div className="view-transition"><ViewErrorBoundary><GraphView /></ViewErrorBoundary></div>} />
+              <Route path="/reports" element={<div className="view-transition"><ViewErrorBoundary><ReportsView /></ViewErrorBoundary></div>} />
               {/* Task 15：标签管理面板 */}
-              <Route path="/tags" element={<ViewErrorBoundary><TagManagementView /></ViewErrorBoundary>} />
-              <Route path="/settings" element={<ViewErrorBoundary><SettingsView /></ViewErrorBoundary>} />
+              <Route path="/tags" element={<div className="view-transition"><ViewErrorBoundary><TagManagementView /></ViewErrorBoundary></div>} />
+              <Route path="/settings" element={<div className="view-transition"><ViewErrorBoundary><SettingsView /></ViewErrorBoundary></div>} />
               {/* 默认重定向到仪表盘（5-Tab 主导航首页） */}
               <Route path="*" element={<Navigate to="/home" replace />} />
             </Routes>

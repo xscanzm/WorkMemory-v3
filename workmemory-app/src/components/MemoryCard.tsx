@@ -8,9 +8,14 @@
  * 通过 showRailDot 在左上角渲染落在轨道虚线上的圆点。
  */
 import { useEffect, useRef, useState } from 'react';
-import { Star, BookMarked, Check } from 'lucide-react';
+import { Star, BookMarked, Check, Eye, Copy, Download, Trash2 } from 'lucide-react';
 import type { CleanEpisode } from '@/types';
+import { api } from '@/src-tauri/api';
+import { toast } from '@/store/toastStore';
+import { downloadText } from '@/utils/download';
 import SourceBadge from './SourceBadge';
+import ConfirmDialog from './ConfirmDialog';
+import { ContextMenuWrapper, type ContextMenuItem } from './ContextMenu';
 
 export interface MemoryCardProps {
   episode: CleanEpisode;
@@ -76,6 +81,9 @@ function MemoryCard(props: MemoryCardProps): JSX.Element {
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState(episode.title);
   const [showUndo, setShowUndo] = useState(true);
+  // Task 20：右键删除二次确认
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Deleted 态：进入后 8 秒自动消失浮条
@@ -131,6 +139,96 @@ function MemoryCard(props: MemoryCardProps): JSX.Element {
     setEditing(false);
   };
 
+  // ===== Task 20：右键菜单动作处理 =====
+  const copySummary = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(episode.summary || '');
+      toast.success('已复制摘要');
+    } catch {
+      toast.error('复制失败');
+    }
+  };
+
+  const saveToWikiFromMenu = async (): Promise<void> => {
+    try {
+      await api.saveToWiki(
+        episode.id,
+        episode.title,
+        episode.summary,
+        episode.topics ?? [],
+      );
+      toast.success('已保存到 Wiki');
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[MemoryCard] saveToWiki 失败', err);
+      toast.error('保存到 Wiki 失败');
+    }
+  };
+
+  const exportMarkdown = (): void => {
+    const lines: string[] = [
+      `# ${episode.title}`,
+      '',
+      `- **日期**: ${episode.date}`,
+      `- **时间**: ${fmtHM(episode.startTime)} - ${fmtHM(episode.endTime)}`,
+      `- **持续**: ${durationMinutes(episode.startTime, episode.endTime)} 分钟`,
+      episode.project ? `- **项目**: ${episode.project}` : null,
+      '',
+      '## 摘要',
+      '',
+      episode.summary || '（暂无摘要）',
+    ].filter((line): line is string => Boolean(line));
+    downloadText(
+      `${episode.date || 'memory'}-${episode.id}.md`,
+      lines.join('\n') + '\n',
+      'text/markdown;charset=utf-8',
+    );
+    toast.success('已导出');
+  };
+
+  const confirmHardDelete = async (): Promise<void> => {
+    setDeleting(true);
+    try {
+      await api.invoke<void>('delete_episode', { id: episode.id });
+      toast.success('已删除');
+      setConfirmDelete(false);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[MemoryCard] delete_episode 失败', err);
+      toast.error('删除失败');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  /** 构建 Episode 卡片右键菜单项 */
+  const menuItems: ContextMenuItem[] = [
+    {
+      type: 'action',
+      label: '查看详情',
+      icon: <Eye size={14} />,
+      disabled: !onClick,
+      onSelect: () => onClick?.(),
+    },
+    { type: 'action', label: '复制摘要', icon: <Copy size={14} />, onSelect: () => void copySummary() },
+    {
+      type: 'action',
+      label: '保存到 Wiki',
+      icon: <BookMarked size={14} />,
+      disabled: !episode.wikiEligible && episode.wikiStatus !== 'saved',
+      onSelect: () => void saveToWikiFromMenu(),
+    },
+    { type: 'action', label: '导出 Markdown', icon: <Download size={14} />, onSelect: exportMarkdown },
+    { type: 'separator' },
+    {
+      type: 'action',
+      label: '删除',
+      icon: <Trash2 size={14} />,
+      danger: true,
+      onSelect: () => setConfirmDelete(true),
+    },
+  ];
+
   const cardStyle: React.CSSProperties = {
     position: 'relative',
     background: 'var(--color-surface)',
@@ -160,15 +258,17 @@ function MemoryCard(props: MemoryCardProps): JSX.Element {
   };
 
   return (
-    <div
-      role="listitem"
-      className={isPrivate ? 'privacy-stripes' : undefined}
-      style={cardStyle}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      onClick={editing ? undefined : onClick}
-    >
-      {showRailDot && <span style={dotStyle} aria-hidden />}
+    <>
+    <ContextMenuWrapper items={menuItems}>
+      <div
+        role="listitem"
+        className={isPrivate ? 'privacy-stripes' : undefined}
+        style={cardStyle}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        onClick={editing ? undefined : onClick}
+      >
+        {showRailDot && <span style={dotStyle} aria-hidden />}
 
       {/* Deleted 撤销浮条 */}
       {isDeleted && showUndo && (
@@ -385,7 +485,21 @@ function MemoryCard(props: MemoryCardProps): JSX.Element {
           <Chip>🔗 {evidenceCount} 证据</Chip>
         </div>
       )}
-    </div>
+      </div>
+    </ContextMenuWrapper>
+
+    <ConfirmDialog
+      open={confirmDelete}
+      title="删除记忆"
+      message={`确定要删除「${episode.title}」吗？此操作不可撤销。`}
+      confirmText="删除"
+      danger
+      onConfirm={() => void confirmHardDelete()}
+      onCancel={() => {
+        if (!deleting) setConfirmDelete(false);
+      }}
+    />
+    </>
   );
 }
 

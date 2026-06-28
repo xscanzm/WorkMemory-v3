@@ -152,7 +152,6 @@ const contentStyle: CSSProperties = {
   flexDirection: 'column',
   overflow: 'hidden',
   zIndex: 9001,
-  animation: 'spring-in var(--duration-bounce) var(--ease-spring) both',
 };
 
 const searchBoxStyle: CSSProperties = {
@@ -572,8 +571,9 @@ export default function CommandPalette(): JSX.Element {
     <>
       <Dialog.Root open={open} onOpenChange={(o) => !o && closePalette()}>
         <Dialog.Portal>
-          <Dialog.Overlay style={overlayStyle} />
+          <Dialog.Overlay className="wm-overlay" style={overlayStyle} />
           <Dialog.Content
+            className="wm-dialog-top"
             style={contentStyle}
             onOpenAutoFocus={(e) => {
               e.preventDefault();

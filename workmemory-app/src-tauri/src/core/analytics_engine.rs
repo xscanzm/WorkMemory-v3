@@ -346,4 +346,64 @@ mod tests {
         assert_eq!(stats[1].date, today);
         assert_eq!(stats[1].tasks_completed, 4);
     }
+
+    // ---- 补充测试：边界与组合场景 ----
+
+    #[test]
+    fn calculate_streak_today_and_yesterday_returns_two() {
+        let conn = in_memory_db();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let yesterday = (chrono::Local::now() - chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+        insert_completed_task(&conn, "t1", &yesterday);
+        insert_completed_task(&conn, "t2", &today);
+        assert_eq!(calculate_streak(&conn).unwrap(), 2);
+    }
+
+    #[test]
+    fn calculate_streak_ignores_non_completed_tasks() {
+        let conn = in_memory_db();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        // 插入 inbox 任务（非 completed）——不应计入 streak
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, updated_at) VALUES ('t1', 'T', 'inbox', ?1)",
+            rusqlite::params![format!("{}T12:00:00+08:00", today)],
+        )
+        .unwrap();
+        assert_eq!(calculate_streak(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn on_focus_then_task_completed_accumulates_both() {
+        let conn = in_memory_db();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        insert_completed_task(&conn, "t1", &today);
+        let s1 = on_task_completed(&conn).unwrap();
+        assert_eq!(s1.tasks_completed, 1);
+        let s2 = on_focus_completed(&conn, 1500).unwrap();
+        assert_eq!(s2.tasks_completed, 1, "focus 不应影响 tasks_completed");
+        assert_eq!(s2.total_focus_time, 1500);
+    }
+
+    #[test]
+    fn productivity_score_one_task_one_minute_focus() {
+        let conn = in_memory_db();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        // 1 任务 + 60s 专注 = 10 + 1 = 11
+        conn.execute(
+            "INSERT INTO daily_stats (date, tasks_completed, total_focus_time, streak_count, created_at, updated_at) \
+             VALUES (?1, 1, 60, 0, '', '')",
+            rusqlite::params![today],
+        )
+        .unwrap();
+        assert_eq!(productivity_score(&conn).unwrap(), 11);
+    }
+
+    #[test]
+    fn get_weekly_stats_empty_returns_empty() {
+        let conn = in_memory_db();
+        let stats = get_weekly_stats(&conn).unwrap();
+        assert!(stats.is_empty());
+    }
 }

@@ -40,6 +40,15 @@
   to { opacity: 1; }
 }
 
+/* Overlay 淡出（Task 22：补全退出动画） */
+.aum-overlay[data-state="closed"] {
+  animation: aum-overlay-fade-out 200ms ease-in both;
+}
+@keyframes aum-overlay-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
 /* ===== 弹窗 spring 进入（200ms-600ms，scale 0.5→1.0 + slight overshoot） ===== */
 .aum-content {
   animation: aum-content-spring 400ms var(--ease-spring, cubic-bezier(0.34, 1.56, 0.64, 1)) both;
@@ -49,6 +58,16 @@
   0% { opacity: 0; transform: translate(-50%, -50%) scale(0.5); }
   60% { opacity: 1; transform: translate(-50%, -50%) scale(1.06); }
   100% { opacity: 1; transform: translate(-50%, -50%) scale(1.0); }
+}
+
+/* 弹窗 spring 退出（Task 22：补全退出动画，scale 1.0→0.95 + opacity 1→0） */
+.aum-content[data-state="closed"] {
+  animation: aum-content-exit 200ms ease-in both;
+  animation-delay: 0ms;
+}
+@keyframes aum-content-exit {
+  from { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  to { opacity: 0; transform: translate(-50%, -50%) scale(0.95); }
 }
 
 /* ===== 粒子区（顶部 80px） =====

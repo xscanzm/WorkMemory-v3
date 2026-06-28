@@ -249,4 +249,138 @@ mod tests {
         assert_eq!((80.0_f64 * 0.95) as i64, 76);
         assert_eq!((80.0_f64 * 0.97) as i64, 77);
     }
+
+    // ---- DB 集成测试：feed/play/rest/clean/decay/on_*_completed ----
+
+    fn in_memory_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE pet_state (id TEXT PRIMARY KEY, species TEXT, level INTEGER, xp INTEGER, hunger INTEGER, energy INTEGER, happiness INTEGER, cleanliness INTEGER, bond_level INTEGER, mood TEXT, last_updated TEXT);\
+             CREATE TABLE pet_interaction_logs (id TEXT PRIMARY KEY, action TEXT, delta TEXT, created_at TEXT);",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn insert_default_pet(conn: &Connection) {
+        conn.execute(
+            "INSERT INTO pet_state (id, species, level, xp, hunger, energy, happiness, cleanliness, bond_level, mood, last_updated) \
+             VALUES ('default', 'cat', 1, 0, 50, 50, 50, 50, 0, 'neutral', '2026-06-26T10:00:00+08:00')",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn feed_increases_hunger_and_happiness() {
+        let conn = in_memory_db();
+        insert_default_pet(&conn);
+        let pet = feed(&conn).unwrap();
+        assert_eq!(pet.hunger, 70); // 50 + 20
+        assert_eq!(pet.happiness, 55); // 50 + 5
+    }
+
+    #[test]
+    fn feed_at_max_hunger_clamps_to_100() {
+        let conn = in_memory_db();
+        conn.execute(
+            "INSERT INTO pet_state (id, species, level, xp, hunger, energy, happiness, cleanliness, bond_level, mood, last_updated) \
+             VALUES ('default', 'cat', 1, 0, 95, 50, 50, 50, 0, 'happy', '2026-06-26T10:00:00+08:00')",
+            [],
+        )
+        .unwrap();
+        let pet = feed(&conn).unwrap();
+        assert_eq!(pet.hunger, 100, "hunger 应钳制到 100");
+    }
+
+    #[test]
+    fn play_increases_happiness_decreases_energy_and_bond() {
+        let conn = in_memory_db();
+        insert_default_pet(&conn);
+        let pet = play(&conn).unwrap();
+        assert_eq!(pet.happiness, 65); // 50 + 15
+        assert_eq!(pet.energy, 40); // 50 - 10
+        assert_eq!(pet.bond_level, 1); // 0 + 1
+    }
+
+    #[test]
+    fn rest_increases_energy_sets_sleeping_mood() {
+        let conn = in_memory_db();
+        insert_default_pet(&conn);
+        let pet = rest(&conn).unwrap();
+        assert_eq!(pet.energy, 80); // 50 + 30
+        assert_eq!(pet.mood, "sleeping");
+    }
+
+    #[test]
+    fn clean_increases_cleanliness_and_happiness() {
+        let conn = in_memory_db();
+        insert_default_pet(&conn);
+        let pet = clean(&conn).unwrap();
+        assert_eq!(pet.cleanliness, 75); // 50 + 25
+        assert_eq!(pet.happiness, 53); // 50 + 3
+    }
+
+    #[test]
+    fn on_task_completed_grants_xp_and_hunger() {
+        let conn = in_memory_db();
+        insert_default_pet(&conn);
+        let pet = on_task_completed(&conn).unwrap();
+        assert_eq!(pet.xp, 10); // 0 + 10
+        assert_eq!(pet.hunger, 55); // 50 + 5
+        assert_eq!(pet.level, 1, "10 XP 不足以升级");
+    }
+
+    #[test]
+    fn on_focus_completed_grants_xp_and_energy() {
+        let conn = in_memory_db();
+        insert_default_pet(&conn);
+        let pet = on_focus_completed(&conn).unwrap();
+        assert_eq!(pet.xp, 20); // 0 + 20
+        assert_eq!(pet.energy, 60); // 50 + 10
+        assert_eq!(pet.level, 1, "20 XP 不足以升级");
+    }
+
+    #[test]
+    fn decay_reduces_hunger_proportional_to_hours() {
+        let conn = in_memory_db();
+        insert_default_pet(&conn); // hunger=50, energy=50
+        let pet = decay(&conn, 1.0).unwrap();
+        // hunger: 50 * 0.95 = 47.5 → 47
+        assert_eq!(pet.hunger, 47);
+        // energy: 50 * 0.97 = 48.5 → 48
+        assert_eq!(pet.energy, 48);
+    }
+
+    #[test]
+    fn decay_at_zero_stays_zero() {
+        let conn = in_memory_db();
+        conn.execute(
+            "INSERT INTO pet_state (id, species, level, xp, hunger, energy, happiness, cleanliness, bond_level, mood, last_updated) \
+             VALUES ('default', 'cat', 1, 0, 0, 0, 0, 0, 0, 'angry', '2026-06-26T10:00:00+08:00')",
+            [],
+        )
+        .unwrap();
+        let pet = decay(&conn, 10.0).unwrap();
+        assert_eq!(pet.hunger, 0, "hunger=0 衰减后不应低于 0");
+        assert_eq!(pet.energy, 0, "energy=0 衰减后不应低于 0");
+    }
+
+    #[test]
+    fn apply_xp_triple_levelup() {
+        // Level 1 needs 100, Level 2 needs 250, Level 3 needs 400
+        // Start: level 1, xp 0; gain 800
+        // 800 - 100 = 700 (level 2); 700 - 250 = 450 (level 3); 450 - 400 = 50 (level 4)
+        let (level, xp, up) = apply_xp(1, 0, 800);
+        assert_eq!(level, 4);
+        assert_eq!(xp, 50);
+        assert!(up);
+    }
+
+    #[test]
+    fn infer_mood_with_sleeping_override() {
+        // infer_mood 不直接处理 sleeping（由 rest() 设置），验证常规阈值
+        assert_eq!(infer_mood(90, 90, 90), "ecstatic");
+        assert_eq!(infer_mood(20, 20, 20), "angry");
+    }
 }

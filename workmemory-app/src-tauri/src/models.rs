@@ -379,6 +379,57 @@ pub struct FocusSessionSummary {
     pub quality_score: i32,
 }
 
+/// 单个应用时长占比切片（Task 18 - SessionSummaryCard 应用时长分布）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppTimeSlice {
+    pub app_name: String,
+    pub duration_seconds: i64,
+    pub percentage: f64,
+}
+
+/// 注意力流失点（Task 18 - SessionSummaryCard）
+/// 检测短时间内应用切换频繁（如 60s 内切换 >= 3 次）的时段。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttentionLossPoint {
+    pub timestamp: String,
+    /// 原因："应用切换频繁" / "短暂离开" / "高干扰时段"
+    pub reason: String,
+    pub duration_seconds: i64,
+}
+
+/// 关联任务信息（Task 18 - SessionSummaryCard）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelatedTaskInfo {
+    pub task_id: String,
+    pub task_title: String,
+    pub completed: bool,
+}
+
+/// 专注会话总结卡片数据（Task 18 - SessionSummaryCard）
+/// 由 `get_session_summary` IPC 命令返回，前端 SessionSummaryCard 渲染。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSummary {
+    pub session_id: String,
+    pub started_at: String,
+    pub ended_at: String,
+    pub planned_duration_seconds: i64,
+    pub actual_focus_seconds: i64,
+    pub pause_count: i64,
+    pub pause_total_seconds: i64,
+    /// 时长分布（按 process_name 聚合，降序）
+    pub app_distribution: Vec<AppTimeSlice>,
+    /// 注意力流失点
+    pub attention_loss_points: Vec<AttentionLossPoint>,
+    /// 关联任务（focus_sessions.task_id 非空时填充）
+    pub related_task: Option<RelatedTaskInfo>,
+    /// 本次会话期间解锁的成就 ID 列表
+    pub achievements_unlocked: Vec<String>,
+}
+
 /// 成就 (对应 achievements 表)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -412,4 +463,19 @@ pub struct PetInteractionLog {
     pub action: String,
     pub delta: String,
     pub created_at: String,
+}
+
+/// 任务批量更新载荷 (Task 21 - 批量多选)
+///
+/// 所有字段均为可选，仅传入需要变更的字段；后端按字段拼 UPDATE 语句，
+/// 在单事务内对每个 task_id 执行同一组更新。任一失败回滚整个批次。
+/// priority 取值与 Task.priority 对齐（"low"/"medium"/"high"/"urgent"/"none"）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskBatchUpdate {
+    /// 状态机目标：completed / archived 等（与 Task.status 同枚举）
+    pub completed: Option<bool>,
+    pub priority: Option<String>,
+    pub archived: Option<bool>,
+    pub tags: Option<Vec<String>>,
 }

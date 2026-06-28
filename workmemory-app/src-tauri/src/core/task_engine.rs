@@ -186,9 +186,24 @@ pub fn update_task(conn: &Connection, task: &Task) -> AppResult<()> {
 /// 故 `?` 早返回即回滚。
 pub fn delete_task(conn: &mut Connection, id: &str) -> AppResult<()> {
     let tx = conn.transaction()?;
+    let affected = cascade_delete_task(&tx, id)?;
+    if affected == 0 {
+        // tx 在此 drop → 自动 ROLLBACK
+        return Err(AppError::not_found(format!("任务不存在: {}", id)));
+    }
+    tx.commit()?;
+    Ok(())
+}
 
+/// 单条任务的级联清理（在调用方提供的事务/连接上执行）。
+///
+/// 抽出此内部辅助是为了让 `batch_delete_tasks` 能在共享事务内复用同一组级联逻辑，
+/// 保证"任一失败回滚整个批次"。返回受影响行数（0 表示该任务不存在，调用方决定是否报错）。
+///
+/// 接受 `&Connection` 而非 `&mut`，以便 `Transaction`（Deref<Target=Connection>）也能传入。
+fn cascade_delete_task(conn: &Connection, id: &str) -> AppResult<i64> {
     // 1. SET NULL focus_sessions.task_id where it references this task
-    tx.execute(
+    conn.execute(
         "UPDATE focus_sessions SET task_id = NULL WHERE task_id = ?1",
         rusqlite::params![id],
     )?;
@@ -196,7 +211,7 @@ pub fn delete_task(conn: &mut Connection, id: &str) -> AppResult<()> {
     // 2. Remove this task's ID from other tasks' subtasks JSON arrays.
     //    subtasks 列为 JSON TEXT（如 '["uuid1","uuid2"]'），先用 LIKE 粗筛候选行，
     //    再在内存中解析 JSON 精确移除，避免误伤仅子串匹配的 ID。
-    let mut stmt = tx.prepare(
+    let mut stmt = conn.prepare(
         "SELECT id, subtasks FROM tasks WHERE subtasks IS NOT NULL AND subtasks LIKE ?1",
     )?;
     let affected: Vec<(String, String)> = stmt
@@ -211,7 +226,7 @@ pub fn delete_task(conn: &mut Connection, id: &str) -> AppResult<()> {
         if let Ok(mut arr) = serde_json::from_str::<Vec<String>>(&subtasks_json) {
             arr.retain(|s| s != id);
             let new_json = serde_json::to_string(&arr).unwrap_or_default();
-            tx.execute(
+            conn.execute(
                 "UPDATE tasks SET subtasks = ?1 WHERE id = ?2",
                 rusqlite::params![new_json, task_id],
             )?;
@@ -219,14 +234,125 @@ pub fn delete_task(conn: &mut Connection, id: &str) -> AppResult<()> {
     }
 
     // 3. Delete the task itself
-    let affected = tx.execute("DELETE FROM tasks WHERE id = ?1", rusqlite::params![id])?;
-    if affected == 0 {
-        // tx 在此 drop → 自动 ROLLBACK
-        return Err(AppError::not_found(format!("任务不存在: {}", id)));
+    let affected = conn.execute("DELETE FROM tasks WHERE id = ?1", rusqlite::params![id])?;
+    Ok(affected as i64)
+}
+
+/// 批量删除任务（事务化，任一失败回滚整个批次）。
+///
+/// Task 21.3：在共享事务内对每个 id 调用 `cascade_delete_task` 完成级联清理；
+/// 任意 id 不存在或清理失败时整批回滚，保证不会出现"部分删除部分保留"的脏状态。
+/// 返回受影响行数（即成功删除的任务数）。
+pub fn batch_delete_tasks(conn: &mut Connection, ids: &[String]) -> AppResult<i64> {
+    let tx = conn.transaction()?;
+    let mut total: i64 = 0;
+    for id in ids {
+        let affected = cascade_delete_task(&tx, id)?;
+        if affected == 0 {
+            // tx 在此 drop → 自动 ROLLBACK
+            return Err(AppError::not_found(format!("任务不存在: {}", id)));
+        }
+        total += affected;
+    }
+    tx.commit()?;
+    Ok(total)
+}
+
+/// 批量更新任务（事务化，任一失败回滚整个批次）。
+///
+/// Task 21.3：在共享事务内逐个 id 执行 UPDATE。状态机校验仍生效——
+/// 例如批次中某任务已 archived，再批量 completed 时会因 archived→completed 非法流转
+/// 而拒绝整批。返回受影响行数（即成功更新的任务数）。
+///
+/// 字段语义：
+///   - `completed: Some(true)`  → status='completed'
+///   - `completed: Some(false)` → status='todo'（取消完成）
+///   - `archived: Some(true)`   → status='archived'
+///   - `archived: Some(false)`  → status='todo'（取消归档）
+///   - `priority: Some(s)`      → priority=s
+///   - `tags: Some(vec)`        → tags=JSON(vec)
+///   - 多个字段同时设置时按上述顺序解析 status（archived 优先级高于 completed）
+pub fn batch_update_tasks(
+    conn: &mut Connection,
+    ids: &[String],
+    updates: &crate::models::TaskBatchUpdate,
+) -> AppResult<i64> {
+    let tx = conn.transaction()?;
+    let now = chrono::Local::now().format("%+").to_string();
+
+    // 解析目标 status：completed/archived 互斥，archived 优先（更"终态"）
+    let target_status: Option<&str> = if let Some(true) = updates.archived {
+        Some("archived")
+    } else if let Some(true) = updates.completed {
+        Some("completed")
+    } else if matches!(updates.archived, Some(false)) || matches!(updates.completed, Some(false)) {
+        // 任一字段为 false（取消终态）→ 回到 todo
+        Some("todo")
+    } else {
+        None
+    };
+
+    let mut total: i64 = 0;
+    for id in ids {
+        // 读取当前 status 用于状态机校验；不存在则整批回滚
+        let current_status: String = tx
+            .query_row(
+                "SELECT status FROM tasks WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    AppError::not_found(format!("任务不存在: {}", id))
+                }
+                other => AppError::DbError(other.to_string()),
+            })?;
+
+        let final_status = target_status.unwrap_or(current_status.as_str()).to_string();
+        if final_status != current_status {
+            validate_transition(&current_status, &final_status)?;
+        }
+
+        // 拼 UPDATE：按字段动态拼接 SET 子句，使用 Vec<Box<dyn ToSql>> 绑定动态参数
+        let mut set_clauses: Vec<&str> = Vec::new();
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        set_clauses.push("status = ?");
+        params_vec.push(Box::new(final_status.clone()));
+
+        if let Some(ref p) = updates.priority {
+            set_clauses.push("priority = ?");
+            params_vec.push(Box::new(p.clone()));
+        }
+        if let Some(ref tags) = updates.tags {
+            let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_string());
+            set_clauses.push("tags = ?");
+            params_vec.push(Box::new(tags_json));
+        }
+        set_clauses.push("updated_at = ?");
+        params_vec.push(Box::new(now.clone()));
+
+        let sql = format!("UPDATE tasks SET {} WHERE id = ?", set_clauses.join(", "));
+        params_vec.push(Box::new(id.clone())); // WHERE id = ?
+
+        let param_refs: Vec<&dyn rusqlite::ToSql> =
+            params_vec.iter().map(|b| b.as_ref()).collect();
+        let affected = tx.execute(&sql, param_refs.as_slice())?;
+        if affected == 0 {
+            // tx 在此 drop → 自动 ROLLBACK
+            return Err(AppError::not_found(format!("任务不存在: {}", id)));
+        }
+        total += affected as i64;
+
+        // 衍生计算：与 update_task 对齐，仅在 status 真正转入 completed 时触发
+        if final_status == "completed" && current_status != "completed" {
+            crate::core::pet_engine::on_task_completed(&tx)?;
+            crate::core::analytics_engine::on_task_completed(&tx)?;
+        }
     }
 
     tx.commit()?;
-    Ok(())
+    Ok(total)
 }
 
 /// FTS5 全文搜索（含中文子串回退）
@@ -440,5 +566,145 @@ mod tests {
 
         // 3. 子任务本身已删除
         assert!(get_task(&conn, &child_id).is_err(), "子任务应被删除");
+    }
+
+    // ---- 补充测试：生命周期 / subtasks / 排序 / 分页 / 批量 ----
+
+    /// 含 pet_state + daily_stats 的完整内存数据库（用于 completed 流转触发衍生计算）
+    fn full_in_memory_db() -> Connection {
+        let conn = in_memory_db();
+        conn.execute_batch(
+            "CREATE TABLE pet_state (id TEXT PRIMARY KEY, species TEXT, level INTEGER, xp INTEGER, hunger INTEGER, energy INTEGER, happiness INTEGER, cleanliness INTEGER, bond_level INTEGER, mood TEXT, last_updated TEXT);\
+             CREATE TABLE pet_interaction_logs (id TEXT PRIMARY KEY, action TEXT, delta TEXT, created_at TEXT);\
+             CREATE TABLE daily_stats (date TEXT PRIMARY KEY, tasks_completed INTEGER, total_focus_time INTEGER, streak_count INTEGER, created_at TEXT, updated_at TEXT);\
+             INSERT INTO pet_state (id, species, level, xp, hunger, energy, happiness, cleanliness, bond_level, mood, last_updated) VALUES ('default', 'cat', 1, 0, 80, 80, 80, 80, 0, 'happy', '2026-06-26T10:00:00+08:00');",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn sample_task(title: &str, sort_order: i64) -> Task {
+        Task {
+            id: String::new(), title: title.to_string(), description: String::new(),
+            status: "inbox".to_string(), priority: "none".to_string(), due_date: None,
+            mood_tag: None, recurrence_rule: None, is_pinned: false, sort_order,
+            subtasks: Vec::new(), category: String::new(), tags: Vec::new(),
+            created_at: String::new(), updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn full_lifecycle_inbox_to_archived() {
+        let conn = full_in_memory_db();
+        let mut t = save_task(&conn, sample_task("T", 0)).unwrap();
+        // inbox → todo
+        t.status = "todo".to_string();
+        assert!(update_task(&conn, &t).is_ok());
+        // todo → in_progress
+        t.status = "in_progress".to_string();
+        assert!(update_task(&conn, &t).is_ok());
+        // in_progress → completed（触发 pet/analytics 衍生计算）
+        t.status = "completed".to_string();
+        assert!(update_task(&conn, &t).is_ok());
+        // completed → archived
+        t.status = "archived".to_string();
+        assert!(update_task(&conn, &t).is_ok());
+        // archived → todo（终态，拒绝）
+        t.status = "todo".to_string();
+        assert!(update_task(&conn, &t).is_err());
+    }
+
+    #[test]
+    fn subtasks_json_roundtrip() {
+        let conn = in_memory_db();
+        let mut task = sample_task("父任务", 0);
+        task.subtasks = vec!["child-1".to_string(), "child-2".to_string()];
+        let saved = save_task(&conn, task).unwrap();
+        let fetched = get_task(&conn, &saved.id).unwrap();
+        assert_eq!(fetched.subtasks, vec!["child-1".to_string(), "child-2".to_string()]);
+    }
+
+    #[test]
+    fn get_all_tasks_sorted_by_sort_order() {
+        let conn = in_memory_db();
+        save_task(&conn, sample_task("T1", 2)).unwrap();
+        save_task(&conn, sample_task("T2", 1)).unwrap();
+        let tasks = get_all_tasks(&conn, None, None).unwrap();
+        assert_eq!(tasks.len(), 2);
+        // sort_order ASC：T2 (1) 在 T1 (2) 之前
+        assert_eq!(tasks[0].title, "T2");
+        assert_eq!(tasks[1].title, "T1");
+    }
+
+    #[test]
+    fn get_all_tasks_pagination() {
+        let conn = in_memory_db();
+        for i in 0..5 {
+            save_task(&conn, sample_task(&format!("T{}", i), i)).unwrap();
+        }
+        let page1 = get_all_tasks(&conn, Some(2), Some(0)).unwrap();
+        assert_eq!(page1.len(), 2);
+        let page2 = get_all_tasks(&conn, Some(2), Some(2)).unwrap();
+        assert_eq!(page2.len(), 2);
+        let page3 = get_all_tasks(&conn, Some(2), Some(4)).unwrap();
+        assert_eq!(page3.len(), 1);
+    }
+
+    #[test]
+    fn batch_delete_tasks_transactional_success() {
+        let mut conn = in_memory_db();
+        let t1 = save_task(&conn, sample_task("T1", 0)).unwrap();
+        let t2 = save_task(&conn, sample_task("T2", 0)).unwrap();
+        let affected = batch_delete_tasks(&mut conn, &[t1.id.clone(), t2.id.clone()]).unwrap();
+        assert_eq!(affected, 2);
+        assert!(get_task(&conn, &t1.id).is_err());
+        assert!(get_task(&conn, &t2.id).is_err());
+    }
+
+    #[test]
+    fn batch_delete_tasks_rolls_back_on_missing_id() {
+        let mut conn = in_memory_db();
+        let t1 = save_task(&conn, sample_task("T1", 0)).unwrap();
+        // 第二个 id 不存在 → 整批回滚
+        let result = batch_delete_tasks(&mut conn, &[t1.id.clone(), "nonexistent-id".to_string()]);
+        assert!(result.is_err());
+        // t1 应仍存在（回滚保护）
+        assert!(get_task(&conn, &t1.id).is_ok());
+    }
+
+    #[test]
+    fn batch_update_tasks_sets_completed() {
+        let mut conn = full_in_memory_db();
+        let t1 = save_task(&conn, sample_task("T1", 0)).unwrap();
+        let mut t2 = save_task(&conn, sample_task("T2", 0)).unwrap();
+        t2.status = "todo".to_string();
+        update_task(&conn, &t2).unwrap(); // inbox → todo
+        let t2 = get_task(&conn, &t2.id).unwrap();
+
+        let updates = crate::models::TaskBatchUpdate {
+            completed: Some(true),
+            priority: None,
+            archived: None,
+            tags: None,
+        };
+        let affected = batch_update_tasks(&mut conn, &[t1.id.clone(), t2.id.clone()], &updates).unwrap();
+        assert_eq!(affected, 2);
+        let after1 = get_task(&conn, &t1.id).unwrap();
+        assert_eq!(after1.status, "completed");
+        let after2 = get_task(&conn, &t2.id).unwrap();
+        assert_eq!(after2.status, "completed");
+    }
+
+    #[test]
+    fn validate_transition_unknown_state_rejects() {
+        assert!(validate_transition("unknown", "todo").is_err());
+        assert!(validate_transition("todo", "unknown").is_err());
+    }
+
+    #[test]
+    fn validate_transition_same_state_ok() {
+        assert!(validate_transition("inbox", "inbox").is_ok());
+        assert!(validate_transition("completed", "completed").is_ok());
+        assert!(validate_transition("archived", "archived").is_ok());
     }
 }

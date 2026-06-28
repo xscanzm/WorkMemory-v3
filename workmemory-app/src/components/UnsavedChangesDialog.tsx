@@ -23,6 +23,7 @@ export function UnsavedChangesDialog({
     <Dialog.Root open={open} onOpenChange={(o) => !o && onCancel()}>
       <Dialog.Portal>
         <Dialog.Overlay
+          className="wm-overlay"
           style={{
             position: 'fixed',
             inset: 0,
@@ -31,6 +32,7 @@ export function UnsavedChangesDialog({
           }}
         />
         <Dialog.Content
+          className="wm-dialog-center"
           style={{
             position: 'fixed',
             top: '50%',

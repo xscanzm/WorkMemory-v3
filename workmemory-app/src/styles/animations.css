@@ -1,0 +1,180 @@
+/**
+ * WorkMemory 统一动画系统 (audit-v4-hardening Task 22)
+ *
+ * 集中定义视图切换、模态框进出、列表项增删等动画。
+ * 依赖 variables.css 中的 --ease-spring / --ease-out-expo 等 token。
+ * Radix Dialog 通过 data-state="open" / data-state="closed" 暴露状态，
+ * 使用 CSS attribute selector 实现进入/退出动画。
+ *
+ * 尊重 prefers-reduced-motion：index.css 已有全局降级规则（animation-duration: 0.01ms），
+ * 此处额外对动画工具类显式禁用动画，确保可访问性。
+ */
+
+/* ===== Spring physics 变量（复用 variables.css，此处仅注释说明） =====
+ * --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1)  — overshoot 弹性出场
+ * --ease-spring-soft: cubic-bezier(0.25, 0.46, 0.45, 0.94) — 柔和弹性
+ * --duration-fast: 150ms / --duration-base: 200ms / --duration-slow: 250ms
+ */
+
+/* ===== 1. 视图切换过渡（300ms ease-out） =====
+ * 路由切换时新视图挂载，CSS animation 在 mount 时自动播放。
+ * translateY(8px) → 0 提供轻微的上滑入场感。 */
+.view-transition {
+  animation: view-fade-in 300ms ease-out;
+}
+
+@keyframes view-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 视图退出动画（供需要卸载前播放的场景预留） */
+@keyframes view-fade-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+/* ===== 2. 模态框进出 spring physics 动画 =====
+ * Radix Dialog.Content / Dialog.Overlay 在 open/closed 切换时设置 data-state。
+ * 进入：scale 0.95 → 1.0 + opacity 0 → 1，250ms var(--ease-spring)
+ * 退出：scale 1.0 → 0.95 + opacity 1 → 0，200ms ease-in
+ * overlay：opacity 0 → 1，200ms
+ *
+ * 注意：居中模态（translate(-50%, -50%)）与顶部模态（translateX(-50%)）的
+ * 基础 transform 不同，keyframes 需保留对应 translate 以维持定位。
+ */
+
+/* ----- 2a. 居中模态（translate(-50%, -50%)） ----- */
+.wm-dialog-center[data-state="open"] {
+  animation: wm-dialog-enter-center 250ms var(--ease-spring) both;
+}
+.wm-dialog-center[data-state="closed"] {
+  animation: wm-dialog-exit-center 200ms ease-in both;
+}
+@keyframes wm-dialog-enter-center {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+@keyframes wm-dialog-exit-center {
+  from {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.95);
+  }
+}
+
+/* ----- 2b. 顶部模态（translateX(-50%)，如 CommandPalette） ----- */
+.wm-dialog-top[data-state="open"] {
+  animation: wm-dialog-enter-top 250ms var(--ease-spring) both;
+}
+.wm-dialog-top[data-state="closed"] {
+  animation: wm-dialog-exit-top 200ms ease-in both;
+}
+@keyframes wm-dialog-enter-top {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) scale(1);
+  }
+}
+@keyframes wm-dialog-exit-top {
+  from {
+    opacity: 1;
+    transform: translateX(-50%) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-50%) scale(0.95);
+  }
+}
+
+/* ----- 2c. Overlay 淡入淡出 ----- */
+.wm-overlay[data-state="open"] {
+  animation: wm-overlay-enter 200ms ease-out both;
+}
+.wm-overlay[data-state="closed"] {
+  animation: wm-overlay-exit 200ms ease-in both;
+}
+@keyframes wm-overlay-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes wm-overlay-exit {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* ===== 3. 列表项增删动画 =====
+ * 新增项：从透明 + translateY(-8px) 进入
+ * 删除项：透明度 0 + scale 0.95（需配合延迟卸载，CSS 仅定义关键帧）
+ * CSS animation 在元素 mount 时自动播放，适用于新增项入场。
+ */
+.list-item-enter {
+  animation: list-item-enter 250ms var(--ease-spring) both;
+}
+@keyframes list-item-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes list-item-exit {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+}
+
+/* ===== 4. 尊重 prefers-reduced-motion =====
+ * index.css 末尾已有全局降级规则（animation-duration: 0.01ms !important），
+ * 此处对动画工具类显式禁用，双重保障可访问性。 */
+@media (prefers-reduced-motion: reduce) {
+  .view-transition,
+  .list-item-enter,
+  .wm-dialog-center,
+  .wm-dialog-top,
+  .wm-overlay {
+    animation: none !important;
+  }
+}

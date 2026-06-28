@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn update_task_enforces_state_machine() {
-        let conn = in_memory_db();
+        let conn = full_in_memory_db();
         let task = Task {
             id: String::new(), title: "T".to_string(), description: String::new(),
             status: "inbox".to_string(), priority: "none".to_string(), due_date: None,

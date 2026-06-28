@@ -15,9 +15,13 @@ use tauri::Manager;
 
 use crate::core::achievement_engine;
 use crate::core::analytics_engine;
+use crate::core::capture;
 use crate::core::data_port;
+use crate::core::distill;
+use crate::core::embedding;
 use crate::core::focus_engine;
 use crate::core::pet_engine;
+use crate::core::report;
 use crate::core::soundscape_engine;
 use crate::core::task_engine;
 use crate::core::error::{AppError, AppResult};
@@ -34,20 +38,20 @@ use crate::models::Task;
 /// 读取当前记录状态（Recording / Paused / PrivacyMode / Idle）。
 #[tauri::command]
 pub async fn get_recorder_state(app: tauri::AppHandle) -> Result<String, String> {
-    Ok(core::capture::get_recorder_state(&app))
+    Ok(capture::get_recorder_state(&app))
 }
 
 /// 设置记录状态；状态变更会触发 `recorder-state-changed` 事件。
 #[tauri::command]
 pub async fn set_recorder_state(app: tauri::AppHandle, state: String) -> Result<(), String> {
-    core::capture::set_recorder_state(&app, state);
+    capture::set_recorder_state(&app, state);
     Ok(())
 }
 
 /// 手动快速捕捉（Ghost Capture），返回 OCR 纯文本。
 #[tauri::command]
 pub async fn trigger_manual_capture(app: tauri::AppHandle) -> Result<String, String> {
-    Ok(core::capture::trigger_manual_capture(app).await)
+    Ok(capture::trigger_manual_capture(app).await)
 }
 
 // ============================================================
@@ -57,7 +61,7 @@ pub async fn trigger_manual_capture(app: tauri::AppHandle) -> Result<String, Str
 /// 获取指定日期的今日总结（由 core::distill 生成/缓存）。
 #[tauri::command]
 pub async fn get_today_summary(app: tauri::AppHandle, date: String) -> Result<String, String> {
-    core::distill::get_today_summary(&app, &date).await
+    distill::get_today_summary(&app, &date).await
 }
 
 /// 生成工作报告（由 core::report 按 template_type 渲染）。
@@ -67,7 +71,7 @@ pub async fn generate_report(
     date: String,
     template_type: String,
 ) -> Result<models::WorkReport, String> {
-    core::report::generate_report(&app, &date, &template_type).await
+    report::generate_report(&app, &date, &template_type).await
 }
 
 // ============================================================
@@ -137,7 +141,7 @@ pub async fn search_memories(
         (results, settings.embedding_enabled)
     };
     if embedding_enabled {
-        let vec_results = core::embedding::vector_search(&app, &query).await?;
+        let vec_results = embedding::vector_search(&app, &query).await;
         results.extend(vec_results);
     }
     Ok(results)
@@ -146,9 +150,9 @@ pub async fn search_memories(
 /// 日期范围筛选器（前端发送 `{from, to}` 对象，对应 ISO 日期字符串）。
 /// 反序列化为结构体后再转换为 repository 层期望的 `(String, String)` 元组。
 #[derive(serde::Deserialize)]
-struct DateRange {
-    from: String,
-    to: String,
+pub struct DateRange {
+    pub from: String,
+    pub to: String,
 }
 
 // ============================================================
@@ -724,7 +728,7 @@ pub struct MascotInfo {
 pub fn get_daily_stats(app: tauri::AppHandle, date: String) -> Result<models::DailyStats, String> {
     let pool = app.state::<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>>();
     let conn = pool.get().map_err(|e| e.to_string())?;
-    core::stats_engine::get_daily_stats(&conn, &date).map_err(|e| e.to_string())
+    analytics_engine::get_daily_stats(&conn, &date).map_err(|e| e.to_string())
 }
 
 /// 获取今日每日统计。
@@ -732,7 +736,8 @@ pub fn get_daily_stats(app: tauri::AppHandle, date: String) -> Result<models::Da
 pub fn get_today_stats(app: tauri::AppHandle) -> Result<models::DailyStats, String> {
     let pool = app.state::<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>>();
     let conn = pool.get().map_err(|e| e.to_string())?;
-    core::stats_engine::get_today_stats(&conn).map_err(|e| e.to_string())
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    analytics_engine::get_daily_stats(&conn, &today).map_err(|e| e.to_string())
 }
 
 // ============================================================

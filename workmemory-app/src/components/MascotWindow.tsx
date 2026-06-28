@@ -31,7 +31,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
-import { getCurrentWindow, getAllWindows, LogicalPosition } from '@tauri-apps/api/window';
+import { getCurrentWindow, getAllWindows, LogicalPosition, PhysicalPosition, currentMonitor } from '@tauri-apps/api/window';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { api } from '@/src-tauri/api';
 import { useAppStore } from '@/store/useAppStore';
@@ -145,9 +145,10 @@ function MascotWindow(): JSX.Element {
       if (main) {
         await main.show();
         await main.setFocus();
-        // HashRouter：window.location.hash = '#/path' 或 '#/path#anchor'
+        // HashRouter：通过 emit 事件通知主窗口修改 location.hash
+        // （Tauri 2.x WebviewWindow 无 eval 方法，改用事件系统）
         const newHash = hash ? `#${path}#${hash}` : `#${path}`;
-        await main.eval(`window.location.hash = ${JSON.stringify(newHash)};`);
+        await main.emit('navigate-main', { hash: newHash });
       }
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -567,7 +568,7 @@ function MascotWindow(): JSX.Element {
   const snapToNearestCorner = async () => {
     try {
       const win = getCurrentWindow();
-      const monitor = await win.currentMonitor();
+      const monitor = await currentMonitor();
       if (!monitor) return;
       const pos = await win.outerPosition(); // PhysicalPosition
       const winSize = await win.outerSize(); // PhysicalSize
@@ -596,11 +597,7 @@ function MascotWindow(): JSX.Element {
           nearest = c;
         }
       }
-      await win.setPosition({
-        type: 'Physical',
-        x: nearest.x,
-        y: nearest.y,
-      });
+      await win.setPosition(new PhysicalPosition(nearest.x, nearest.y));
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('[snapToNearestCorner] 失败', err);
@@ -616,7 +613,8 @@ function MascotWindow(): JSX.Element {
   const openMainWindow = async () => {
     if (!api.isTauri()) return;
     try {
-      const main = getAllWindows().find((w) => w.label === 'main');
+      const allWindows = await getAllWindows();
+      const main = allWindows.find((w) => w.label === 'main');
       if (main) {
         await main.show();
         await main.setFocus();

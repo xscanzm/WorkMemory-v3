@@ -33,10 +33,10 @@ export const isTauri = (): boolean =>
 /**
  * 统一 invoke：Tauri 环境调用真实后端，Web 环境调用 Mock。
  */
-export async function invoke<T>(command: string, args?: object): Promise<T> {
+export async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (isTauri()) {
     const m = await import('@tauri-apps/api/core');
-    return m.invoke<T>(command, args);
+    return m.invoke<T>(command, args as Record<string, unknown> | undefined);
   }
   return invokeMock(command, args) as Promise<T>;
 }

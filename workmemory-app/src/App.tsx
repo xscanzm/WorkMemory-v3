@@ -190,6 +190,16 @@ export default function App(): JSX.Element {
     };
   }, []);
 
+  // MascotWindow 通过 emit('navigate-main', { hash }) 通知主窗口修改路由
+  // （Tauri 2.x WebviewWindow 无 eval 方法，改用事件系统跨窗口导航）
+  useEffect(() => {
+    void api.listen('navigate-main', (payload: { hash?: string }) => {
+      if (payload?.hash) {
+        window.location.hash = payload.hash;
+      }
+    });
+  }, []);
+
   return (
     <I18nProvider>
       <HashRouter>

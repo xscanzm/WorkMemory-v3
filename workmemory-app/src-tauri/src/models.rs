@@ -342,6 +342,43 @@ pub struct FocusSession {
     pub created_at: String,
 }
 
+/// 专注会话结束总结的分心点（一个时间段内活跃应用的流失记录）
+/// (Task 18 - SessionSummaryCard 后端聚合返回结构)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DistractionPoint {
+    /// 分心发生时间点（RFC3339）
+    pub timestamp: String,
+    /// 分心持续秒数
+    pub duration_seconds: i64,
+    /// 当时活跃应用名（process_name 或 app_name）
+    pub app: String,
+}
+
+/// 专注会话总结（Task 18 - SessionSummaryCard）
+/// 专注完成时由 focus_engine 聚合 segments 与 tasks 表数据返回。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusSessionSummary {
+    pub session_id: String,
+    pub started_at: String,
+    pub ended_at: String,
+    pub total_duration_seconds: i64,
+    pub focused_duration_seconds: i64,
+    pub distracted_duration_seconds: i64,
+    pub longest_focus_stretch_seconds: i64,
+    pub app_switch_count: i32,
+    pub deep_focus_count: i32,
+    pub task_id: Option<String>,
+    pub task_title: Option<String>,
+    pub task_progress_before: Option<i32>,
+    pub task_progress_after: Option<i32>,
+    pub new_subtasks: Vec<String>,
+    pub distraction_points: Vec<DistractionPoint>,
+    pub mascot_comment: String,
+    pub quality_score: i32,
+}
+
 /// 成就 (对应 achievements 表)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

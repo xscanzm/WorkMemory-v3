@@ -36,16 +36,16 @@ pub struct DistillCompletedPayload {
 }
 
 // ============================================================
-// DB 访问辅助（与 core/capture.rs 同模式：取锁、快速操作、释放）
+// DB 访问辅助（与 core/capture.rs 同模式：从连接池取连接、快速操作、释放）
 // ============================================================
 
 fn with_db<F, R>(app: &tauri::AppHandle, f: F) -> Option<R>
 where
     F: FnOnce(&rusqlite::Connection) -> R,
 {
-    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
-    let guard = state.lock().ok()?;
-    Some(f(&guard))
+    let pool = app.state::<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>>();
+    let conn = pool.get().ok()?;
+    Some(f(&conn))
 }
 
 fn now_utc_iso() -> String {
@@ -288,29 +288,22 @@ pub async fn run_distill_for_hour(
     }
 }
 
-/// 事务原子写入 clean_episodes + memory_cells。任一插入失败则 ROLLBACK。
+/// 事务原子写入 clean_episodes + memory_cells。任一插入失败则 ROLLBACK（Transaction
+/// 在未 commit 时 drop 自动回滚）。
+///
+/// 使用 `unchecked_transaction()` 以便从 `&Connection`（不可变借用）开启事务，
+/// 与 `with_db` 辅助函数签名兼容；语义等价于 `conn.transaction()`。
 fn write_episodes_and_cells(
     conn: &rusqlite::Connection,
     pairs: &[(CleanEpisode, MemoryCell)],
 ) -> rusqlite::Result<()> {
-    conn.execute_batch("BEGIN;")?;
-    let result: rusqlite::Result<()> = (|| {
-        for (ep, mc) in pairs {
-            repository::insert_episode(conn, ep)?;
-            repository::insert_memory_cell(conn, mc)?;
-        }
-        Ok(())
-    })();
-    match result {
-        Ok(()) => {
-            conn.execute_batch("COMMIT;")?;
-            Ok(())
-        }
-        Err(e) => {
-            let _ = conn.execute_batch("ROLLBACK;");
-            Err(e)
-        }
+    let tx = conn.unchecked_transaction()?;
+    for (ep, mc) in pairs {
+        repository::insert_episode(&tx, ep)?;
+        repository::insert_memory_cell(&tx, mc)?;
     }
+    tx.commit()?;
+    Ok(())
 }
 
 // ============================================================

@@ -15,7 +15,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { Search, SearchX, X } from 'lucide-react';
 import { api } from '@/src-tauri/api';
-import type { SearchResult } from '@/types';
+import { useDebouncedValue } from '@/utils/debounce';
+import type { CleanEpisode, SearchResult } from '@/types';
+import MemoryFullscreenModal from '@/components/MemoryFullscreenModal';
 
 /** 解析 ==xxx== 包裹的部分，替换为浅黄高亮 <mark> */
 function renderSnippet(snippet: string): ReactNode[] {
@@ -210,8 +212,24 @@ export default function SearchView(): JSX.Element {
   const [loading, setLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [selected, setSelected] = useState<SearchResult | null>(null);
+  const [selectedEpisode, setSelectedEpisode] = useState<CleanEpisode | null>(null);
+  const [episodeLoading, setEpisodeLoading] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // 点击 Episode 命中卡片时按 sourceId 拉取完整 Episode 并唤出详情模态
+  const openEpisodeModal = useCallback(async (sourceId: string) => {
+    setEpisodeLoading(true);
+    try {
+      const ep = await api.getEpisodeById(sourceId);
+      setSelectedEpisode(ep);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[getEpisodeById] 拉取失败', err);
+    } finally {
+      setEpisodeLoading(false);
+    }
+  }, []);
 
   // Ctrl/Cmd+K 聚焦搜索框
   useEffect(() => {
@@ -226,9 +244,11 @@ export default function SearchView(): JSX.Element {
     return () => window.removeEventListener('keydown', handler);
   }, []);
 
-  const doSearch = useCallback(async () => {
-    const q = query.trim();
-    if (!q) {
+  const debouncedQuery = useDebouncedValue(query, 300);
+
+  const doSearch = useCallback(async (q: string) => {
+    const qt = q.trim();
+    if (!qt) {
       setResults([]);
       setHasSearched(false);
       return;
@@ -237,7 +257,7 @@ export default function SearchView(): JSX.Element {
     setHasSearched(true);
     try {
       const dateRange = from || to ? { from, to } : undefined;
-      const res = await api.searchMemories(q, dateRange);
+      const res = await api.searchMemories(qt, dateRange);
       setResults(res ?? []);
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -246,7 +266,12 @@ export default function SearchView(): JSX.Element {
     } finally {
       setLoading(false);
     }
-  }, [query, from, to]);
+  }, [from, to]);
+
+  // 300ms 防抖自动检索（审计意见 2.2：高频 IPC 接口防抖）
+  useEffect(() => {
+    void doSearch(debouncedQuery);
+  }, [debouncedQuery, doSearch]);
 
   const episodeMatches = results.filter((r) => r.sourceType !== 'segment');
   const ocrSnippets = results.filter((r) => r.sourceType === 'segment');
@@ -263,7 +288,7 @@ export default function SearchView(): JSX.Element {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') void doSearch();
+            if (e.key === 'Enter') void doSearch(query);
           }}
           aria-label="全局检索"
         />
@@ -352,7 +377,12 @@ export default function SearchView(): JSX.Element {
                     {episodeMatches.map((r) => {
                       const tag = getHitTag(r);
                       return (
-                        <div key={r.sourceId} style={cardStyle}>
+                        <div
+                          key={r.sourceId}
+                          style={{ ...cardStyle, cursor: 'pointer' }}
+                          onClick={() => void openEpisodeModal(r.sourceId)}
+                          title="点击查看 Episode 详情"
+                        >
                           <div style={primaryTextStyle}>{r.primaryText}</div>
                           <div style={snippetStyle}>{renderSnippet(r.snippet)}</div>
                           <div style={metaStyle}>
@@ -466,6 +496,31 @@ export default function SearchView(): JSX.Element {
           </aside>
         ) : null}
       </div>
+
+      <MemoryFullscreenModal
+        episode={selectedEpisode}
+        open={!!selectedEpisode}
+        onOpenChange={(o) => !o && setSelectedEpisode(null)}
+      />
+      {episodeLoading ? (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: 16,
+            right: 16,
+            padding: '6px 12px',
+            background: 'var(--color-surface)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 'var(--radius-md)',
+            boxShadow: 'var(--shadow-card)',
+            fontSize: 12,
+            color: 'var(--color-text-muted)',
+            zIndex: 9000,
+          }}
+        >
+          加载 Episode 详情…
+        </div>
+      ) : null}
     </div>
   );
 }

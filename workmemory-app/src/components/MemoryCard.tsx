@@ -33,6 +33,8 @@ export interface MemoryCardProps {
   isActive?: boolean;
   /** 是否渲染落在轨道上的圆点，默认 true */
   showRailDot?: boolean;
+  /** 卡片整体点击回调（用于唤出详情模态）。按钮区域会 stopPropagation 防止误触 */
+  onClick?: () => void;
 }
 
 /* ===== 时间计算工具 ===== */
@@ -66,6 +68,7 @@ function MemoryCard(props: MemoryCardProps): JSX.Element {
     isLoading = false,
     isActive = false,
     showRailDot = true,
+    onClick,
   } = props;
 
   const [hovered, setHovered] = useState(false);
@@ -138,6 +141,7 @@ function MemoryCard(props: MemoryCardProps): JSX.Element {
     padding: 'var(--space-lg)',
     opacity: isDeleted ? 0.4 : 1,
     overflow: 'visible',
+    cursor: onClick && !isDeleted && !editing ? 'pointer' : undefined,
   };
 
   const dotStyle: React.CSSProperties = {
@@ -162,6 +166,7 @@ function MemoryCard(props: MemoryCardProps): JSX.Element {
       style={cardStyle}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      onClick={editing ? undefined : onClick}
     >
       {showRailDot && <span style={dotStyle} aria-hidden />}
 
@@ -187,7 +192,8 @@ function MemoryCard(props: MemoryCardProps): JSX.Element {
           <span>已删除</span>
           <button
             type="button"
-            onClick={() => {
+            onClick={(e) => {
+              e.stopPropagation();
               onUndo?.(episode.id);
               setShowUndo(false);
             }}
@@ -246,7 +252,10 @@ function MemoryCard(props: MemoryCardProps): JSX.Element {
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
             <button
               type="button"
-              onClick={handleStar}
+              onClick={(e) => {
+                e.stopPropagation();
+                handleStar();
+              }}
               title={important ? '取消重要' : '标记重要'}
               aria-label={important ? '取消重要' : '标记重要'}
               style={iconBtnStyle}
@@ -259,7 +268,10 @@ function MemoryCard(props: MemoryCardProps): JSX.Element {
             </button>
             <button
               type="button"
-              onClick={() => onSaveToWiki?.(episode.id)}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSaveToWiki?.(episode.id);
+              }}
               title={wikiSaved ? '已保存到 Wiki' : '保存到 Wiki'}
               aria-label="保存到 Wiki"
               disabled={!episode.wikiEligible && !wikiSaved}

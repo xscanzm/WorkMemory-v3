@@ -27,6 +27,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { GripVertical } from 'lucide-react';
 import { useTaskStore } from '../store/taskStore';
 import type { Task } from '../store/taskStore';
+import { useDebouncedValue } from '../utils/debounce';
 import TaskCard from '../components/TaskCard';
 import TaskForm from '../components/TaskForm';
 import FAB from '../components/FAB';
@@ -64,22 +65,16 @@ export default function TasksView(): JSX.Element {
     void loadTasks();
   }, [loadTasks]);
 
-  // 搜索防抖 300ms；空查询回退到全量列表
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 搜索防抖 300ms（统一使用 useDebouncedValue，审计意见 2.2）；空查询回退到全量列表
+  const debouncedQuery = useDebouncedValue(query, 300);
   useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    const q = query.trim();
+    const q = debouncedQuery.trim();
     if (!q) {
       setSearchResults(null);
       return;
     }
-    debounceRef.current = setTimeout(() => {
-      void searchTasks(q).then(setSearchResults);
-    }, 300);
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-    };
-  }, [query, searchTasks]);
+    void searchTasks(q).then(setSearchResults);
+  }, [debouncedQuery, searchTasks]);
 
   // 数据源：搜索时用搜索结果，否则用 store tasks；再按状态筛选
   const source = searchResults ?? tasks;

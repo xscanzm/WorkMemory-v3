@@ -457,3 +457,225 @@ fn migrations_are_idempotent() {
     let rules = get_active_privacy_rules(&conn).unwrap();
     assert_eq!(rules.len(), 3, "重复迁移不应产生重复默认隐私规则");
 }
+
+/// Task 2.3：跨表写事务"部分失败回滚"验证。
+///
+/// 模拟 `save_to_wiki` 的跨表写模式（wiki_pages INSERT + clean_episodes UPDATE）：
+/// 1. 先插入一条合法 wiki_page（引用已存在的 episode）—— 成功
+/// 2. 再插入一条 wiki_page，source_episode_id 指向不存在的 episode ——
+///    在 `PRAGMA foreign_keys = ON` 下触发 SQLITE_CONSTRAINT_FOREIGNKEY 失败
+/// 3. 事务未 commit 即 drop —— 应自动 ROLLBACK，第一条 wiki_page 也应消失
+///
+/// 同时验证对照路径：两条合法写入 commit 后均持久化，episode.wiki_status 被更新。
+#[test]
+fn cross_table_transaction_rolls_back_on_partial_failure() {
+    let mut conn = setup(); // setup() 已开启 PRAGMA foreign_keys = ON
+    insert_episode(&conn, &sample_episode("ep-tx", "summary")).unwrap();
+
+    let good_page = WikiPage {
+        id: "wiki-good".to_string(),
+        title: "好页面".to_string(),
+        content: "内容".to_string(),
+        source_type: "ai".to_string(),
+        source_episode_id: Some("ep-tx".to_string()),
+        status: "draft".to_string(),
+        tags: vec![],
+        created_at: "2026-06-26T12:00:00Z".to_string(),
+        updated_at: "2026-06-26T12:00:00Z".to_string(),
+    };
+    let bad_page = WikiPage {
+        id: "wiki-bad".to_string(),
+        // 引用不存在的 episode —— 外键约束失败
+        source_episode_id: Some("nonexistent-episode".to_string()),
+        ..good_page.clone()
+    };
+
+    // ---- 回滚路径：第二条 INSERT 失败，事务整体回滚 ----
+    let tx = conn.transaction().unwrap();
+    insert_wiki_page(&tx, &good_page).unwrap();
+    let second_result = insert_wiki_page(&tx, &bad_page);
+    assert!(
+        second_result.is_err(),
+        "引用不存在的 episode 应触发外键约束失败"
+    );
+    // 不调用 commit 直接 drop tx —— Transaction 未 commit 时 drop 自动回滚
+    drop(tx);
+
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM wiki_pages", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        count, 0,
+        "事务回滚后 wiki_pages 应为空（首条写入也应被回滚）"
+    );
+
+    // ---- 对照路径：两条合法写入 commit 后全部持久化 ----
+    let tx2 = conn.transaction().unwrap();
+    insert_wiki_page(&tx2, &good_page).unwrap();
+    update_episode_wiki_status(&tx2, "ep-tx", "saved").unwrap();
+    tx2.commit().unwrap();
+
+    let count2: i64 = conn
+        .query_row("SELECT COUNT(*) FROM wiki_pages", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count2, 1, "commit 后 wiki_pages 应有 1 条");
+    let ep = get_episode_by_id(&conn, "ep-tx").unwrap().unwrap();
+    assert_eq!(
+        ep.wiki_status, "saved",
+        "commit 后 episode.wiki_status 应更新为 saved"
+    );
+}
+
+// ============================================================================
+// Task 15: 标签管理（list_tags / rename_tag / merge_tags / set_tag_color）
+// ============================================================================
+
+/// 构造一条可定制的 WikiPage（仅 id / tags / updated_at 可变）。
+fn sample_wiki_page(id: &str, tags: Vec<&str>, updated_at: &str) -> WikiPage {
+    WikiPage {
+        id: id.to_string(),
+        title: format!("页面-{}", id),
+        content: format!("内容-{}", id),
+        source_type: "manual".to_string(),
+        source_episode_id: None,
+        status: "published".to_string(),
+        tags: tags.into_iter().map(String::from).collect(),
+        created_at: "2026-06-26T08:00:00Z".to_string(),
+        updated_at: updated_at.to_string(),
+    }
+}
+
+#[test]
+fn list_tags_aggregates_count_and_last_used_at() {
+    let conn = setup();
+    // 3 个 wiki_pages，标签分布：
+    //   wiki-a: ["设计", "订单"]      updated_at=2026-06-26T10:00:00Z
+    //   wiki-b: ["设计", "退款"]      updated_at=2026-06-26T12:00:00Z
+    //   wiki-c: ["设计"]              updated_at=2026-06-26T09:00:00Z
+    insert_wiki_page(&conn, &sample_wiki_page("wiki-a", vec!["设计", "订单"], "2026-06-26T10:00:00Z")).unwrap();
+    insert_wiki_page(&conn, &sample_wiki_page("wiki-b", vec!["设计", "退款"], "2026-06-26T12:00:00Z")).unwrap();
+    insert_wiki_page(&conn, &sample_wiki_page("wiki-c", vec!["设计"], "2026-06-26T09:00:00Z")).unwrap();
+
+    let tags = list_tags(&conn).unwrap();
+    // 设计: count=3, 退款: count=1, 订单: count=1
+    let by_name: std::collections::HashMap<String, TagInfo> = tags
+        .iter()
+        .map(|t| (t.name.clone(), t.clone()))
+        .collect();
+    assert_eq!(by_name.len(), 3);
+    let design = by_name.get("设计").unwrap();
+    assert_eq!(design.count, 3);
+    // last_used_at 应为最新一行的 updated_at
+    assert_eq!(design.last_used_at, "2026-06-26T12:00:00Z");
+    assert!(design.color.is_none(), "未设置颜色时 color 应为 None");
+
+    let order = by_name.get("订单").unwrap();
+    assert_eq!(order.count, 1);
+    assert_eq!(order.last_used_at, "2026-06-26T10:00:00Z");
+
+    // 顺序：count 降序 → "设计" 在最前
+    assert_eq!(tags[0].name, "设计");
+    // 退款/订单 count=1，按 name 升序：退款 在 订单 之前（UTF-8 编码序）
+    let tail_names: Vec<&str> = tags[1..].iter().map(|t| t.name.as_str()).collect();
+    assert!(tail_names.contains(&"订单"));
+    assert!(tail_names.contains(&"退款"));
+}
+
+#[test]
+fn list_tags_reads_colors_from_settings() {
+    let conn = setup();
+    insert_wiki_page(&conn, &sample_wiki_page("wiki-x", vec!["设计"], "2026-06-26T10:00:00Z")).unwrap();
+    // 预置 tag_colors JSON
+    let colors_json = "{\"设计\":\"#FF5733\"}";
+    conn.execute(
+        "INSERT INTO settings(key, value, updated_at) VALUES ('tag_colors', ?1, datetime('now'))",
+        rusqlite::params![colors_json],
+    )
+    .unwrap();
+
+    let tags = list_tags(&conn).unwrap();
+    let design = tags.iter().find(|t| t.name == "设计").unwrap();
+    assert_eq!(design.color.as_deref(), Some("#FF5733"));
+}
+
+#[test]
+fn rename_tag_updates_all_wiki_pages() {
+    let mut conn = setup();
+    insert_wiki_page(&conn, &sample_wiki_page("wiki-a", vec!["设计", "订单"], "2026-06-26T10:00:00Z")).unwrap();
+    insert_wiki_page(&conn, &sample_wiki_page("wiki-b", vec!["设计", "退款"], "2026-06-26T12:00:00Z")).unwrap();
+    insert_wiki_page(&conn, &sample_wiki_page("wiki-c", vec!["其它"], "2026-06-26T09:00:00Z")).unwrap();
+
+    let affected = rename_tag(&mut conn, "设计", "Design").unwrap();
+    // wiki-a 与 wiki-b 含 "设计" → 受影响行数 = 2
+    assert_eq!(affected, 2);
+
+    let a = get_wiki_page(&conn, "wiki-a").unwrap().unwrap();
+    assert_eq!(a.tags, vec!["Design".to_string(), "订单".to_string()]);
+    let b = get_wiki_page(&conn, "wiki-b").unwrap().unwrap();
+    assert_eq!(b.tags, vec!["Design".to_string(), "退款".to_string()]);
+    let c = get_wiki_page(&conn, "wiki-c").unwrap().unwrap();
+    assert_eq!(c.tags, vec!["其它".to_string()], "未含目标标签的页面不应被修改");
+
+    // 再次 list_tags：原 "设计" 应消失，新 "Design" 出现
+    let tags = list_tags(&conn).unwrap();
+    assert!(tags.iter().all(|t| t.name != "设计"));
+    assert!(tags.iter().any(|t| t.name == "Design"));
+}
+
+#[test]
+fn merge_tags_merges_sources_into_target() {
+    let mut conn = setup();
+    // wiki-a: ["设计", "订单"]      → 合并 ["订单"] → "设计"：变成 ["设计"]
+    // wiki-b: ["退款", "设计"]      → 合并 ["退款"] → "设计"：变成 ["设计"]
+    // wiki-c: ["退款", "其它"]      → 合并 ["退款"] → "设计"：变成 ["其它", "设计"]
+    // wiki-d: ["设计"]              → 已含 target、无 source：跳过
+    insert_wiki_page(&conn, &sample_wiki_page("wiki-a", vec!["设计", "订单"], "2026-06-26T10:00:00Z")).unwrap();
+    insert_wiki_page(&conn, &sample_wiki_page("wiki-b", vec!["退款", "设计"], "2026-06-26T12:00:00Z")).unwrap();
+    insert_wiki_page(&conn, &sample_wiki_page("wiki-c", vec!["退款", "其它"], "2026-06-26T09:00:00Z")).unwrap();
+    insert_wiki_page(&conn, &sample_wiki_page("wiki-d", vec!["设计"], "2026-06-26T11:00:00Z")).unwrap();
+
+    let affected = merge_tags(&mut conn, &["退款".to_string(), "订单".to_string()], "设计").unwrap();
+    // wiki-a / wiki-b / wiki-c 受影响（wiki-d 跳过）
+    assert_eq!(affected, 3);
+
+    let a = get_wiki_page(&conn, "wiki-a").unwrap().unwrap();
+    assert_eq!(a.tags, vec!["设计".to_string()]);
+    let b = get_wiki_page(&conn, "wiki-b").unwrap().unwrap();
+    assert_eq!(b.tags, vec!["设计".to_string()]);
+    let c = get_wiki_page(&conn, "wiki-c").unwrap().unwrap();
+    assert_eq!(c.tags, vec!["其它".to_string(), "设计".to_string()]);
+    let d = get_wiki_page(&conn, "wiki-d").unwrap().unwrap();
+    assert_eq!(d.tags, vec!["设计".to_string()]);
+
+    // 验证源标签已被完全移除
+    let tags = list_tags(&conn).unwrap();
+    let names: Vec<&str> = tags.iter().map(|t| t.name.as_str()).collect();
+    assert!(!names.contains(&"退款"));
+    assert!(!names.contains(&"订单"));
+    assert!(names.contains(&"设计"));
+    assert!(names.contains(&"其它"));
+}
+
+#[test]
+fn set_tag_color_roundtrip_and_clear() {
+    let conn = setup();
+    insert_wiki_page(&conn, &sample_wiki_page("wiki-x", vec!["设计"], "2026-06-26T10:00:00Z")).unwrap();
+
+    // 设置颜色
+    set_tag_color(&conn, "设计", "#FF5733").unwrap();
+    let tags = list_tags(&conn).unwrap();
+    let design = tags.iter().find(|t| t.name == "设计").unwrap();
+    assert_eq!(design.color.as_deref(), Some("#FF5733"));
+
+    // 更新颜色
+    set_tag_color(&conn, "设计", "#10B981").unwrap();
+    let tags = list_tags(&conn).unwrap();
+    let design = tags.iter().find(|t| t.name == "设计").unwrap();
+    assert_eq!(design.color.as_deref(), Some("#10B981"));
+
+    // 清除颜色（传空字符串）
+    set_tag_color(&conn, "设计", "").unwrap();
+    let tags = list_tags(&conn).unwrap();
+    let design = tags.iter().find(|t| t.name == "设计").unwrap();
+    assert!(design.color.is_none(), "清除后 color 应为 None");
+}

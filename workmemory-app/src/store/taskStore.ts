@@ -90,25 +90,31 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         }
     },
     updateTask: async (task) => {
+        const prevTasks = get().tasks; // 快照用于回滚（审计意见 2.3）
+        // 乐观更新：先改 UI
+        set({ tasks: prevTasks.map((t) => (t.id === task.id ? task : t)) });
         try {
             await invoke('update_task', { task });
-            set({ tasks: get().tasks.map((t) => (t.id === task.id ? task : t)) });
             return true;
         } catch (err) {
             console.error('[taskStore] updateTask 失败', err);
-            toast.error('更新任务失败');
+            set({ tasks: prevTasks }); // IPC 失败回滚
+            toast.error('更新失败，已回滚');
             return false;
         }
     },
     deleteTask: async (id) => {
+        const prevTasks = get().tasks; // 快照用于回滚（审计意见 2.3）
+        // 乐观删除：先改 UI
+        set({ tasks: prevTasks.filter((t) => t.id !== id) });
         try {
             await invoke('delete_task', { id });
-            set({ tasks: get().tasks.filter((t) => t.id !== id) });
             toast.success('任务已删除');
             return true;
         } catch (err) {
             console.error('[taskStore] deleteTask 失败', err);
-            toast.error('删除任务失败');
+            set({ tasks: prevTasks }); // IPC 失败回滚
+            toast.error('删除失败，已回滚');
             return false;
         }
     },

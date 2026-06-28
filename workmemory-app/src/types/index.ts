@@ -190,3 +190,11 @@ export interface GraphData {
   nodes: GraphNode[];
   edges: GraphEdge[];
 }
+
+/** 标签聚合信息 (Task 15 - 标签管理面板) */
+export interface TagInfo {
+  name: string;
+  count: number;
+  last_used_at: string;
+  color: string | null;
+}

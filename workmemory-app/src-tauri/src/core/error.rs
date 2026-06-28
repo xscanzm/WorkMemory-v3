@@ -58,6 +58,12 @@ impl From<rusqlite::Error> for AppError {
     }
 }
 
+impl From<r2d2::Error> for AppError {
+    fn from(e: r2d2::Error) -> Self {
+        AppError::Internal(format!("数据库连接池错误: {}", e))
+    }
+}
+
 impl From<std::io::Error> for AppError {
     fn from(e: std::io::Error) -> Self {
         AppError::IoError(e.to_string())

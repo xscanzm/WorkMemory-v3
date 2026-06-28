@@ -55,7 +55,7 @@ pub fn spawn_ocr_worker(app: tauri::AppHandle) -> mpsc::Sender<OcrTask> {
 /// 消费 OCR 队列：用 `Semaphore` 限制并发 = 2，对每个任务执行
 /// `recognize` → `clean_text` → 写回 `segments.ocr_text` / `ocr_status`
 ///
-/// DB 访问通过 `app.state::<std::sync::Mutex<rusqlite::Connection>>()`。
+/// DB 访问通过 `app.state::<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>>()`。
 pub async fn run_ocr_queue(app: tauri::AppHandle, mut rx: mpsc::Receiver<OcrTask>) {
     let semaphore = Arc::new(Semaphore::new(OCR_CONCURRENCY));
     log::info!("OCR 队列启动，并发上限 = {}", OCR_CONCURRENCY);
@@ -70,34 +70,58 @@ pub async fn run_ocr_queue(app: tauri::AppHandle, mut rx: mpsc::Receiver<OcrTask
             }
         };
 
-        let app_handle = app.clone();
-        tauri::async_runtime::spawn(async move {
-            // _permit 持有至任务结束，结束时自动释放，唤醒下一个排队任务
-            let _permit = permit;
+        // 包裹单次迭代：派发 panic 不应杀死 worker 循环
+        let iter_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let app_handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                // _permit 持有至任务结束，结束时自动释放，唤醒下一个排队任务
+                let _permit = permit;
 
-            log::debug!(
-                "OCR 开始 segment={} {}x{}",
-                task.segment_id, task.width, task.height
-            );
+                log::debug!(
+                    "OCR 开始 segment={} {}x{}",
+                    task.segment_id, task.width, task.height
+                );
 
-            match recognize(&task.image_rgba, task.width, task.height).await {
-                Some(lines) => {
-                    // 双栏几何重建 → 文本清洗 → 写回 DB
-                    let raw = reconstruct_columns(&lines);
-                    let cleaned = clean_text(&raw);
-                    persist_ocr_result(&app_handle, &task.segment_id, &cleaned, "done");
-                    log::info!(
-                        "OCR 完成 segment={} 清洗后文本长度={}",
+                let ocr_result = recognize(&task.image_rgba, task.width, task.height).await;
+
+                // 包裹结果处理：单次 OCR 结果处理 panic 不应影响其他任务
+                let process_result =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        match ocr_result {
+                            Some(lines) => {
+                                // 双栏几何重建 → 文本清洗 → 写回 DB
+                                let raw = reconstruct_columns(&lines);
+                                let cleaned = clean_text(&raw);
+                                persist_ocr_result(
+                                    &app_handle,
+                                    &task.segment_id,
+                                    &cleaned,
+                                    "done",
+                                );
+                                log::info!(
+                                    "OCR 完成 segment={} 清洗后文本长度={}",
+                                    task.segment_id,
+                                    cleaned.len()
+                                );
+                            }
+                            None => {
+                                persist_ocr_result(&app_handle, &task.segment_id, "", "failed");
+                                log::warn!("OCR 失败 segment={}", task.segment_id);
+                            }
+                        }
+                    }));
+                if let Err(payload) = process_result {
+                    log::error!(
+                        "ocr 结果处理 panic segment={}: {:?}",
                         task.segment_id,
-                        cleaned.len()
+                        payload
                     );
                 }
-                None => {
-                    persist_ocr_result(&app_handle, &task.segment_id, "", "failed");
-                    log::warn!("OCR 失败 segment={}", task.segment_id);
-                }
-            }
-        });
+            });
+        }));
+        if let Err(payload) = iter_result {
+            log::error!("ocr 队列迭代 panic: {:?}", payload);
+        }
     }
 
     log::info!("OCR 队列接收端关闭，worker 退出");
@@ -105,11 +129,11 @@ pub async fn run_ocr_queue(app: tauri::AppHandle, mut rx: mpsc::Receiver<OcrTask
 
 /// 将 OCR 结果写回 `segments` 表（`ocr_text` + `ocr_status`）
 fn persist_ocr_result(app: &tauri::AppHandle, segment_id: &str, ocr_text: &str, status: &str) {
-    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
-    let conn = match state.lock() {
-        Ok(guard) => guard,
+    let pool = app.state::<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>>();
+    let conn = match pool.get() {
+        Ok(c) => c,
         Err(e) => {
-            log::error!("DB Mutex poisoned，无法写回 OCR 结果: {}", e);
+            log::error!("DB 连接池获取失败，无法写回 OCR 结果: {}", e);
             return;
         }
     };
@@ -400,71 +424,99 @@ mod winrt_impl {
     use windows::Media::Ocr::OcrEngine;
 
     /// 调用 WinRT Media.Ocr 识别 RGBA 像素，返回 word 级几何信息（按行分组）
+    ///
+    /// 同步阶段（内存缓冲准备 / 结果提取）包裹 `catch_unwind`，防止单次 WinRT
+    /// 系统调用 panic 杀死 OCR worker；异步 `.await` 由外层 `tauri::spawn` 隔离。
     pub(super) async fn recognize_inner(
         rgba: &[u8],
         width: u32,
         height: u32,
     ) -> windows::core::Result<Vec<OcrLineInfo>> {
-        // 1) RGBA → BGRA：WinRT SoftwareBitmap 使用 Bgra8 格式，逐像素交换 R / B 通道
-        let mut bgra = rgba.to_vec();
-        for px in bgra.chunks_exact_mut(4) {
-            px.swap(0, 2);
-        }
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        use windows::Win32::Foundation::E_FAIL;
 
-        // 2) 装入 MemoryBuffer（实现 IBuffer），经 IMemoryBufferByteAccess 写入像素字节
-        let len = bgra.len();
-        let memory_buffer = MemoryBuffer::new(len as u32)?;
-        let reference = memory_buffer.CreateReference()?;
-        let byte_access: IMemoryBufferByteAccess = reference.cast()?;
-        let mut data_ptr: *mut u8 = std::ptr::null_mut();
-        let mut capacity: u32 = 0;
-        unsafe {
-            byte_access.GetBuffer(&mut data_ptr, &mut capacity)?;
-            std::ptr::copy_nonoverlapping(bgra.as_ptr(), data_ptr, len);
-        }
+        // === SYNC 阶段 1-4：内存缓冲 + OCR 引擎准备 ===
+        let prepared: windows::core::Result<(SoftwareBitmap, OcrEngine)> = match catch_unwind(
+            AssertUnwindSafe(|| -> windows::core::Result<(SoftwareBitmap, OcrEngine)> {
+                // 1) RGBA → BGRA：WinRT SoftwareBitmap 使用 Bgra8 格式，逐像素交换 R / B 通道
+                let mut bgra = rgba.to_vec();
+                for px in bgra.chunks_exact_mut(4) {
+                    px.swap(0, 2);
+                }
 
-        // 3) 创建带 Alpha 的 SoftwareBitmap（Bgra8，每像素 4 字节，同步拷贝）
-        let ibuffer: IBuffer = memory_buffer.cast()?;
-        let software_bitmap = SoftwareBitmap::CreateCopyWithAlphaFromBuffer(
-            &ibuffer,
-            BitmapPixelFormat::Bgra8,
-            width as i32,
-            height as i32,
-        )?;
+                // 2) 装入 MemoryBuffer（实现 IBuffer），经 IMemoryBufferByteAccess 写入像素字节
+                let len = bgra.len();
+                let memory_buffer = MemoryBuffer::new(len as u32)?;
+                let reference = memory_buffer.CreateReference()?;
+                let byte_access: IMemoryBufferByteAccess = reference.cast()?;
+                let mut data_ptr: *mut u8 = std::ptr::null_mut();
+                let mut capacity: u32 = 0;
+                unsafe {
+                    byte_access.GetBuffer(&mut data_ptr, &mut capacity)?;
+                    std::ptr::copy_nonoverlapping(bgra.as_ptr(), data_ptr, len);
+                }
 
-        // 4) 获取 OCR 引擎：优先 zh-Hans-CN（支持中文），失败回退用户配置语言（覆盖英文 OS）
-        let engine = (|| {
-            let lang_id = windows::core::HSTRING::from("zh-Hans-CN");
-            let lang = Language::CreateLanguage(&lang_id)?;
-            OcrEngine::TryCreateFromLanguage(&lang)
-        })()
-        .or_else(|e| {
-            log::warn!("zh-Hans-CN OCR 引擎不可用（{}），回退用户配置语言", e);
-            OcrEngine::TryCreateFromUserProfileLanguages()
-        })?;
+                // 3) 创建带 Alpha 的 SoftwareBitmap（Bgra8，每像素 4 字节，同步拷贝）
+                let ibuffer: IBuffer = memory_buffer.cast()?;
+                let software_bitmap = SoftwareBitmap::CreateCopyWithAlphaFromBuffer(
+                    &ibuffer,
+                    BitmapPixelFormat::Bgra8,
+                    width as i32,
+                    height as i32,
+                )?;
+
+                // 4) 获取 OCR 引擎：优先 zh-Hans-CN（支持中文），失败回退用户配置语言（覆盖英文 OS）
+                let engine = (|| {
+                    let lang_id = windows::core::HSTRING::from("zh-Hans-CN");
+                    let lang = Language::CreateLanguage(&lang_id)?;
+                    OcrEngine::TryCreateFromLanguage(&lang)
+                })()
+                .or_else(|e| {
+                    log::warn!("zh-Hans-CN OCR 引擎不可用（{}），回退用户配置语言", e);
+                    OcrEngine::TryCreateFromUserProfileLanguages()
+                })?;
+
+                Ok((software_bitmap, engine))
+            }),
+        ) {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => return Err(e),
+            Err(payload) => {
+                log::error!("ocr WinRT setup 系统调用 panic: {:?}", payload);
+                return Err(windows::core::Error::from(E_FAIL));
+            }
+        };
 
         // 5) 异步识别：IAsyncOperation<OcrResult> 由 windows-rs 转为 Future，可直接 await
         let result = engine.RecognizeAsync(&software_bitmap).await?;
 
-        // 6) 遍历 Lines → Words，提取 word 级几何信息
-        let mut lines: Vec<OcrLineInfo> = Vec::new();
-        for line in result.Lines()? {
-            let mut words: Vec<OcrWordInfo> = Vec::new();
-            for word in line.Words()? {
-                let text = word.Text()?.to_string();
-                let rect = word.BoundingRect()?;
-                words.push(OcrWordInfo {
-                    text,
-                    x: rect.X as f64,
-                    y: rect.Y as f64,
-                    width: rect.Width as f64,
-                    height: rect.Height as f64,
-                });
+        // === SYNC 阶段 6：遍历 Lines → Words，提取 word 级几何信息 ===
+        match catch_unwind(AssertUnwindSafe(|| -> windows::core::Result<Vec<OcrLineInfo>> {
+            let mut lines: Vec<OcrLineInfo> = Vec::new();
+            for line in result.Lines()? {
+                let mut words: Vec<OcrWordInfo> = Vec::new();
+                for word in line.Words()? {
+                    let text = word.Text()?.to_string();
+                    let rect = word.BoundingRect()?;
+                    words.push(OcrWordInfo {
+                        text,
+                        x: rect.X as f64,
+                        y: rect.Y as f64,
+                        width: rect.Width as f64,
+                        height: rect.Height as f64,
+                    });
+                }
+                lines.push(OcrLineInfo { words });
             }
-            lines.push(OcrLineInfo { words });
+            Ok(lines)
+        })) {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(e)) => Err(e),
+            Err(payload) => {
+                log::error!("ocr WinRT extract 系统调用 panic: {:?}", payload);
+                Err(windows::core::Error::from(E_FAIL))
+            }
         }
-
-        Ok(lines)
     }
 }
 

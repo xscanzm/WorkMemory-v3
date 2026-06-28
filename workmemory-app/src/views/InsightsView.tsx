@@ -12,11 +12,12 @@
  * - 空状态：Lightbulb + "今天还没有洞察，开始工作后小记会帮你分析时间分布。"
  * 中性叙述，禁止"低效/摸鱼/浪费时间"等评判式表达。
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { Lightbulb, RefreshCw, Circle } from 'lucide-react';
 import { api } from '@/src-tauri/api';
 import { useAppStore } from '@/store/useAppStore';
+import { useAsync } from '@/hooks/useAsync';
 import InsightCard from '@/components/InsightCard';
 import type { Insight } from '@/types';
 
@@ -153,27 +154,21 @@ export default function InsightsView(): JSX.Element {
   const activeDate = useAppStore((s) => s.activeDate);
   const setActiveDate = useAppStore((s) => s.setActiveDate);
 
-  const [insights, setInsights] = useState<Insight[]>([]);
-  const [loading, setLoading] = useState(false);
+  // 统一通过 useAsync 获取洞察数据（审计意见 2.5），refreshKey 变化触发重新拉取
   const [refreshKey, setRefreshKey] = useState(0);
+  const { data, loading, error } = useAsync(
+    () => api.getInsights(activeDate),
+    { deps: [activeDate, refreshKey] },
+  );
+  const insights: Insight[] = data ?? [];
 
-  const load = useCallback(async (date: string) => {
-    setLoading(true);
-    try {
-      const res = await api.getInsights(date);
-      setInsights(res ?? []);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('[getInsights] 拉取失败', err);
-      setInsights([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
+  // 保留原有的失败日志（best-effort，失败时降级为空列表展示空状态）
   useEffect(() => {
-    void load(activeDate);
-  }, [activeDate, refreshKey, load]);
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.error('[getInsights] 拉取失败', error);
+    }
+  }, [error]);
 
   return (
     <div style={pageStyle}>

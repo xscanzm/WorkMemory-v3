@@ -943,3 +943,170 @@ fn normalize_fts_rank(rank: f64) -> f32 {
     let neg = if rank < 0.0 { -rank } else { 0.0 };
     (1.0 / (1.0 + neg)) as f32
 }
+
+// ============================================================================
+// 标签管理 (Task 15) - 供 ipc::commands 调用，便于单元测试
+// ============================================================================
+
+/// 标签聚合信息（与 ipc::commands::TagInfo 字段一致；last_used_at 保持 snake_case）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TagInfo {
+    pub name: String,
+    pub count: i64,
+    pub last_used_at: String,
+    pub color: Option<String>,
+}
+
+/// 从 wiki_pages.tags 聚合每个标签的出现次数与最近使用时间（updated_at）。
+/// 颜色字段从 settings 表 key='tag_colors' 的 JSON（Map<String,String>）读取。
+/// 结果按 count 降序、name 升序排列。
+pub fn list_tags(conn: &Connection) -> rusqlite::Result<Vec<TagInfo>> {
+    let mut agg: std::collections::HashMap<String, (i64, String)> =
+        std::collections::HashMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT tags, updated_at FROM wiki_pages ORDER BY updated_at DESC",
+    )?;
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+
+    for (tags_json, updated_at) in &rows {
+        let tags: Vec<String> = serde_json::from_str(tags_json).unwrap_or_default();
+        for tag in tags {
+            let tag = tag.trim().to_string();
+            if tag.is_empty() {
+                continue;
+            }
+            let entry = agg.entry(tag.clone()).or_insert((0, String::new()));
+            entry.0 += 1;
+            if updated_at > &entry.1 {
+                entry.1 = updated_at.clone();
+            }
+        }
+    }
+
+    let colors: std::collections::HashMap<String, String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'tag_colors'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    let mut result: Vec<TagInfo> = agg
+        .into_iter()
+        .map(|(name, (count, last_used_at))| TagInfo {
+            color: colors.get(&name).cloned(),
+            name,
+            count,
+            last_used_at,
+        })
+        .collect();
+    result.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
+    Ok(result)
+}
+
+/// 重命名标签：在事务内遍历全部 wiki_pages，将 tags 数组中的 old_name 替换为 new_name。
+/// 返回受影响的 wiki_pages 行数。
+pub fn rename_tag(
+    conn: &mut Connection,
+    old_name: &str,
+    new_name: &str,
+) -> rusqlite::Result<i64> {
+    let pages = get_wiki_pages(conn, 10000)?;
+    let tx = conn.transaction()?;
+    let mut affected: i64 = 0;
+    for page in &pages {
+        if !page.tags.iter().any(|t| t == old_name) {
+            continue;
+        }
+        let new_tags: Vec<String> = page
+            .tags
+            .iter()
+            .map(|t| if t == old_name { new_name.to_string() } else { t.clone() })
+            .collect();
+        let mut updated = page.clone();
+        updated.tags = new_tags;
+        update_wiki_page(&tx, &updated)?;
+        affected += 1;
+    }
+    tx.commit()?;
+    Ok(affected)
+}
+
+/// 合并标签：在事务内遍历全部 wiki_pages，从 tags 数组移除 source_tags 中的项，
+/// 若 target_tag 不存在则添加。返回受影响的 wiki_pages 行数。
+pub fn merge_tags(
+    conn: &mut Connection,
+    source_tags: &[String],
+    target_tag: &str,
+) -> rusqlite::Result<i64> {
+    let source_set: std::collections::HashSet<String> = source_tags
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s != target_tag)
+        .collect();
+
+    let pages = get_wiki_pages(conn, 10000)?;
+    let tx = conn.transaction()?;
+    let mut affected: i64 = 0;
+    for page in &pages {
+        let has_source = page.tags.iter().any(|t| source_set.contains(t));
+        let has_target = page.tags.iter().any(|t| t == target_tag);
+        if !has_source && has_target {
+            continue;
+        }
+        let mut new_tags: Vec<String> = page
+            .tags
+            .iter()
+            .filter(|t| !source_set.contains(*t))
+            .cloned()
+            .collect();
+        if !new_tags.iter().any(|t| t == target_tag) {
+            new_tags.push(target_tag.to_string());
+        }
+        if new_tags == page.tags {
+            continue;
+        }
+        let mut updated = page.clone();
+        updated.tags = new_tags;
+        update_wiki_page(&tx, &updated)?;
+        affected += 1;
+    }
+    tx.commit()?;
+    Ok(affected)
+}
+
+/// 设置/清除标签颜色：将 settings 表 key='tag_colors' 的 JSON（Map<String,String>）
+/// 中 tag 对应的颜色更新为 color；color 为空字符串时移除该 key。
+pub fn set_tag_color(conn: &Connection, tag: &str, color: &str) -> rusqlite::Result<()> {
+    let mut colors: std::collections::HashMap<String, String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'tag_colors'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    if color.is_empty() {
+        colors.remove(tag);
+    } else {
+        colors.insert(tag.to_string(), color.to_string());
+    }
+
+    let json = serde_json::to_string(&colors).map_err(map_json_err)?;
+    conn.execute(
+        "INSERT INTO settings (key, value, updated_at) VALUES ('tag_colors', ?1, datetime('now'))
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        params![json],
+    )?;
+    Ok(())
+}

@@ -174,12 +174,58 @@ pub fn update_task(conn: &Connection, task: &Task) -> AppResult<()> {
     Ok(())
 }
 
-/// 删除任务
-pub fn delete_task(conn: &Connection, id: &str) -> AppResult<()> {
-    let affected = conn.execute("DELETE FROM tasks WHERE id=?1", rusqlite::params![id])?;
+/// 删除任务（含外键级联清理）
+///
+/// Task 5.2：tasks.subtasks 是 JSON 数组（存放子任务 ID），focus_sessions.task_id 是
+/// 可空外键——二者均无数据库级 FK 约束，需在删除任务前显式清理引用，避免悬挂引用：
+/// 1. focus_sessions.task_id SET NULL（保留会话历史，仅断开关联）
+/// 2. 从其他任务的 subtasks JSON 数组中移除本任务 ID
+/// 3. 删除任务本身
+///
+/// 使用事务包裹：任一步失败整体回滚。`Transaction` 的 Drop 在未 commit 时自动 ROLLBACK，
+/// 故 `?` 早返回即回滚。
+pub fn delete_task(conn: &mut Connection, id: &str) -> AppResult<()> {
+    let tx = conn.transaction()?;
+
+    // 1. SET NULL focus_sessions.task_id where it references this task
+    tx.execute(
+        "UPDATE focus_sessions SET task_id = NULL WHERE task_id = ?1",
+        rusqlite::params![id],
+    )?;
+
+    // 2. Remove this task's ID from other tasks' subtasks JSON arrays.
+    //    subtasks 列为 JSON TEXT（如 '["uuid1","uuid2"]'），先用 LIKE 粗筛候选行，
+    //    再在内存中解析 JSON 精确移除，避免误伤仅子串匹配的 ID。
+    let mut stmt = tx.prepare(
+        "SELECT id, subtasks FROM tasks WHERE subtasks IS NOT NULL AND subtasks LIKE ?1",
+    )?;
+    let affected: Vec<(String, String)> = stmt
+        .query_map(rusqlite::params![format!("%{}%", id)], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+
+    for (task_id, subtasks_json) in affected {
+        if let Ok(mut arr) = serde_json::from_str::<Vec<String>>(&subtasks_json) {
+            arr.retain(|s| s != id);
+            let new_json = serde_json::to_string(&arr).unwrap_or_default();
+            tx.execute(
+                "UPDATE tasks SET subtasks = ?1 WHERE id = ?2",
+                rusqlite::params![new_json, task_id],
+            )?;
+        }
+    }
+
+    // 3. Delete the task itself
+    let affected = tx.execute("DELETE FROM tasks WHERE id = ?1", rusqlite::params![id])?;
     if affected == 0 {
+        // tx 在此 drop → 自动 ROLLBACK
         return Err(AppError::not_found(format!("任务不存在: {}", id)));
     }
+
+    tx.commit()?;
     Ok(())
 }
 
@@ -248,7 +294,7 @@ mod tests {
     use super::*;
     fn in_memory_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        // 简化：直接建 tasks + fts_tasks + 同步触发器（镜像 migrations.rs 生产 schema）
+        // 简化：直接建 tasks + fts_tasks + 同步触发器 + focus_sessions（镜像 migrations.rs 生产 schema）
         conn.execute_batch(r#"
             CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT DEFAULT '', status TEXT DEFAULT 'inbox', priority TEXT DEFAULT 'none', due_date TEXT, mood_tag TEXT, recurrence_rule TEXT, is_pinned INTEGER DEFAULT 0, sort_order INTEGER DEFAULT 0, subtasks TEXT DEFAULT '[]', category TEXT DEFAULT '', tags TEXT DEFAULT '[]', created_at TEXT, updated_at TEXT);
             CREATE VIRTUAL TABLE fts_tasks USING fts5(title, description, content='tasks', content_rowid='rowid', tokenize='unicode61');
@@ -262,6 +308,7 @@ mod tests {
               INSERT INTO fts_tasks(fts_tasks, rowid, title, description) VALUES('delete', old.rowid, old.title, old.description);
               INSERT INTO fts_tasks(rowid, title, description) VALUES (new.rowid, new.title, new.description);
             END;
+            CREATE TABLE focus_sessions (id TEXT PRIMARY KEY NOT NULL, start_time TEXT NOT NULL, end_time TEXT, duration_seconds INTEGER NOT NULL DEFAULT 0, type TEXT NOT NULL DEFAULT 'pomodoro', task_id TEXT, interrupted INTEGER NOT NULL DEFAULT 0, interruption_reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
         "#).unwrap();
         conn
     }
@@ -342,5 +389,56 @@ mod tests {
         let results = search_tasks(&conn, "周报").unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "写周报");
+    }
+
+    #[test]
+    fn test_delete_task_cascades() {
+        let mut conn = in_memory_db();
+
+        // 父任务 subtasks 引用子任务 ID；专注会话 task_id 引用子任务 ID
+        let child_id = "child-uuid-001".to_string();
+        let parent_id = "parent-uuid-001".to_string();
+
+        let parent = Task {
+            id: parent_id.clone(), title: "父任务".to_string(), description: String::new(),
+            status: "inbox".to_string(), priority: "none".to_string(), due_date: None,
+            mood_tag: None, recurrence_rule: None, is_pinned: false, sort_order: 0,
+            subtasks: vec![child_id.clone()], category: String::new(), tags: Vec::new(),
+            created_at: String::new(), updated_at: String::new(),
+        };
+        save_task(&conn, parent).unwrap();
+
+        let child = Task {
+            id: child_id.clone(), title: "子任务".to_string(), description: String::new(),
+            status: "inbox".to_string(), priority: "none".to_string(), due_date: None,
+            mood_tag: None, recurrence_rule: None, is_pinned: false, sort_order: 0,
+            subtasks: Vec::new(), category: String::new(), tags: Vec::new(),
+            created_at: String::new(), updated_at: String::new(),
+        };
+        save_task(&conn, child).unwrap();
+
+        conn.execute(
+            "INSERT INTO focus_sessions (id, start_time, task_id, created_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["fs-1", "2024-01-01T00:00:00+08:00", &child_id, "2024-01-01T00:00:00+08:00"],
+        ).unwrap();
+
+        // 删除子任务
+        delete_task(&mut conn, &child_id).unwrap();
+
+        // 1. focus_session.task_id 应被置 NULL（会话历史保留）
+        let task_id: Option<String> = conn.query_row(
+            "SELECT task_id FROM focus_sessions WHERE id = ?1",
+            rusqlite::params!["fs-1"],
+            |row| row.get(0),
+        ).unwrap();
+        assert!(task_id.is_none(), "focus_session.task_id 应被置 NULL");
+
+        // 2. 父任务 subtasks JSON 不再包含子任务 ID
+        let parent_after = get_task(&conn, &parent_id).unwrap();
+        assert!(!parent_after.subtasks.contains(&child_id), "父任务 subtasks 应移除子任务 ID");
+        assert!(parent_after.subtasks.is_empty());
+
+        // 3. 子任务本身已删除
+        assert!(get_task(&conn, &child_id).is_err(), "子任务应被删除");
     }
 }

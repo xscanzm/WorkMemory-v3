@@ -2,7 +2,7 @@
  * 顶部状态栏 (04_UI_SPEC.md §2 TopBar)
  *
  * - 左：录制状态指示圆点（绿=Recording / 灰=Paused / 紫=PrivacyMode / 暗黄=Idle）+ 状态文字
- * - 中：今日一句话总结缩略（点击跳转今日页）
+ * - 中：面包屑导航（Task 14，根据当前路由显示层级路径，占据中部主要空间）
  * - 右：全局搜索框（点击跳转搜索页，提示 "Ctrl+K 搜索"）+ 快捷控制（暂停/恢复 + 隐私模式切换）
  * - 毛玻璃 + 底部 1px 边框
  */
@@ -12,6 +12,7 @@ import { useAppStore } from '@/store/useAppStore';
 import { toast } from '../store/toastStore';
 import { api } from '@/src-tauri/api';
 import type { RecorderState } from '@/types';
+import Breadcrumbs from './Breadcrumbs';
 
 const topbarStyle: React.CSSProperties = {
   flex: '0 0 auto',
@@ -44,7 +45,6 @@ const STATE_META: Record<
 function TopBar(): JSX.Element {
   const navigate = useNavigate();
   const recorderState = useAppStore((s) => s.recorderState);
-  const todaySummary = useAppStore((s) => s.todaySummary);
 
   const meta = STATE_META[recorderState];
 
@@ -109,50 +109,8 @@ function TopBar(): JSX.Element {
         </span>
       </div>
 
-      {/* 中：今日一句话总结（点击跳转今日） */}
-      <button
-        type="button"
-        onClick={() => navigate('/today')}
-        title="查看今日"
-        style={{
-          flex: 1,
-          minWidth: 0,
-          maxWidth: 480,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 'var(--space-sm)',
-          padding: '6px 12px',
-          border: 'none',
-          background: 'transparent',
-          cursor: 'pointer',
-          borderRadius: 'var(--radius-md)',
-          color: 'var(--color-text-muted)',
-          fontSize: 13,
-          overflow: 'hidden',
-          whiteSpace: 'nowrap',
-          textOverflow: 'ellipsis',
-          transition: 'background var(--duration-fast) var(--ease-out-expo)',
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.background = 'var(--color-surface-subtle)';
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.background = 'transparent';
-        }}
-      >
-        <span style={{ color: 'var(--color-text-light)', flexShrink: 0 }}>
-          今日 ·
-        </span>
-        <span
-          style={{
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {todaySummary || '点击查看今日工作回顾'}
-        </span>
-      </button>
+      {/* 中：面包屑导航（Task 14，占据中部主要空间） */}
+      <Breadcrumbs />
 
       {/* 右：搜索框 + 快捷控制 */}
       <div

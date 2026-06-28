@@ -51,6 +51,21 @@
         "x": 1700,
         "y": 800,
         "url": "index.html#/mascot"
+      },
+      {
+        "label": "quick-capture",
+        "title": "快速捕获",
+        "url": "index.html#/quick-capture",
+        "width": 480,
+        "height": 200,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "center": true,
+        "shadow": true
       }
     ],
     "trayIcon": {

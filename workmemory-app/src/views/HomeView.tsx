@@ -19,6 +19,7 @@ import { invoke, isTauri } from '@/src-tauri/api';
 import { useTaskStore, type Task } from '@/store/taskStore';
 import { usePetStore, type PetState } from '@/store/petStore';
 import { useAppStore } from '@/store/useAppStore';
+import { useAsync } from '@/hooks/useAsync';
 import MascotSprite from '@/components/mascot/MascotSprite';
 import AIInsightCard from '@/components/AIInsightCard';
 import StreakCalendar from '@/components/StreakCalendar';
@@ -147,27 +148,16 @@ export default function HomeView(): JSX.Element {
   const petState = usePetStore((s) => s.petState);
   const mascotId = useAppStore((s) => s.mascotId);
 
-  const [stats, setStats] = useState<DailyStats | null>(null);
-  const [statsError, setStatsError] = useState(false);
+  // 今日统计：统一通过 useAsync 获取（审计意见 2.5），loading/error/data 三态
+  const { data: stats, error: statsError } = useAsync(
+    () => invoke<DailyStats>('get_today_stats'),
+    { deps: [] },
+  );
   // 分析数据：连续天数 + 生产力评分（本周分析卡片使用）
   const [streak, setStreak] = useState<number>(0);
   const [productivityScore, setProductivityScore] = useState<number>(0);
   // 成就列表（Task 23.1）
   const [achievements, setAchievements] = useState<Achievement[]>([]);
-
-  /** 拉取今日统计（后端 get_today_stats） */
-  const loadTodayStats = async (): Promise<void> => {
-    try {
-      const data = await invoke<DailyStats>('get_today_stats');
-      setStats(data);
-      setStatsError(false);
-    } catch (err) {
-      // 后端未就绪或调用失败时静默降级为占位
-      console.error('[HomeView] get_today_stats 失败', err);
-      setStats(null);
-      setStatsError(true);
-    }
-  };
 
   /** 拉取分析数据：连续打卡天数 + 生产力评分（best-effort，失败降级为 0） */
   const loadAnalytics = async (): Promise<void> => {
@@ -187,7 +177,11 @@ export default function HomeView(): JSX.Element {
     }
   };
 
-  /** 拉取成就（先重算解锁条件，再展示，best-effort） */
+  /** 拉取成就（先重算解锁条件，再展示，best-effort）
+   *
+   * Task 17.3：后端 recalculate_achievements 对新解锁成就 emit
+   * 'achievement-unlocked' 事件 → achievementStore → AchievementUnlockModal 特效弹窗。
+   * 成就解锁通知走专属弹窗，**不再** 走 toastStore 普通 toast（此处不调用 toast）。 */
   const loadAchievements = async (): Promise<void> => {
     try {
       const list = await invoke<Achievement[]>('recalculate_achievements');
@@ -198,11 +192,10 @@ export default function HomeView(): JSX.Element {
     }
   };
 
-  // 挂载时拉取任务 / 宠物 / 今日统计 / 分析数据 / 成就
+  // 挂载时拉取任务 / 宠物 / 分析数据 / 成就（今日统计由 useAsync 自动获取）
   useEffect(() => {
     void useTaskStore.getState().loadTasks();
     void usePetStore.getState().loadPetState();
-    void loadTodayStats();
     void loadAnalytics();
     void loadAchievements();
   }, []);
@@ -264,7 +257,7 @@ export default function HomeView(): JSX.Element {
       />
 
       {/* 3. 今日统计条 */}
-      <StatsRow stats={stats} hasError={statsError} />
+      <StatsRow stats={stats} hasError={!!statsError} />
 
       {/* 4. 本周分析（AI 见解 + 打卡热力图） */}
       <section aria-label="本周分析" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-md)' }}>

@@ -84,8 +84,8 @@ export const usePetStore = create<PetStoreState>((set, get) => ({
     },
 
     feed: async () => {
+        const prev = get().petState; // 快照用于回滚（审计意见 2.3）
         try {
-            const prev = get().petState;
             const pet = await invoke<PetState>('feed_pet');
             if (prev && pet.level > prev.level) {
                 set({ petState: pet, levelupSignal: get().levelupSignal + 1 });
@@ -96,13 +96,14 @@ export const usePetStore = create<PetStoreState>((set, get) => ({
             toast.success('喂食成功');
         } catch (err) {
             console.error('[petStore] feed 失败', err);
-            toast.error('喂食失败');
+            set({ petState: prev }); // IPC 失败回滚
+            toast.error('操作失败，已回滚');
         }
     },
 
     play: async () => {
+        const prev = get().petState; // 快照用于回滚（审计意见 2.3）
         try {
-            const prev = get().petState;
             const pet = await invoke<PetState>('play_pet');
             if (prev && pet.level > prev.level) {
                 set({ petState: pet, levelupSignal: get().levelupSignal + 1 });
@@ -113,13 +114,14 @@ export const usePetStore = create<PetStoreState>((set, get) => ({
             toast.success('玩耍成功');
         } catch (err) {
             console.error('[petStore] play 失败', err);
-            toast.error('玩耍失败');
+            set({ petState: prev }); // IPC 失败回滚
+            toast.error('操作失败，已回滚');
         }
     },
 
     rest: async () => {
+        const prev = get().petState; // 快照用于回滚（审计意见 2.3）
         try {
-            const prev = get().petState;
             const pet = await invoke<PetState>('rest_pet');
             if (prev && pet.level > prev.level) {
                 set({ petState: pet, levelupSignal: get().levelupSignal + 1 });
@@ -130,13 +132,14 @@ export const usePetStore = create<PetStoreState>((set, get) => ({
             toast.success('休息成功');
         } catch (err) {
             console.error('[petStore] rest 失败', err);
-            toast.error('休息失败');
+            set({ petState: prev }); // IPC 失败回滚
+            toast.error('操作失败，已回滚');
         }
     },
 
     clean: async () => {
+        const prev = get().petState; // 快照用于回滚（审计意见 2.3）
         try {
-            const prev = get().petState;
             const pet = await invoke<PetState>('clean_pet');
             if (prev && pet.level > prev.level) {
                 set({ petState: pet, levelupSignal: get().levelupSignal + 1 });
@@ -147,7 +150,8 @@ export const usePetStore = create<PetStoreState>((set, get) => ({
             toast.success('清洁成功');
         } catch (err) {
             console.error('[petStore] clean 失败', err);
-            toast.error('清洁失败');
+            set({ petState: prev }); // IPC 失败回滚
+            toast.error('操作失败，已回滚');
         }
     },
 }));

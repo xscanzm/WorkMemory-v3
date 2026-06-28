@@ -4,12 +4,15 @@
  * - 捕获子树渲染异常，展示“出了点小问题”友好兜底页
  * - 提供“重试”按钮重置内部状态，并可展开技术详情（错误堆栈）
  * - 在 App.tsx 中包裹 MainLayout，保证主窗口渲染异常不会白屏
+ * - 可选 `fallback` 渲染 prop：传入时用其替代默认兜底 UI（ViewErrorBoundary 用于视图级更轻量的兜底）
  */
 import { Component } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
 
 interface Props {
   children: ReactNode;
+  /** 自定义兜底 UI（接收到错误对象与重试回调）。不传则使用默认全屏兜底页。 */
+  fallback?: (error: Error, retry: () => void) => ReactNode;
 }
 
 interface State {
@@ -37,6 +40,10 @@ export default class ErrorBoundary extends Component<Props, State> {
 
   render(): ReactNode {
     if (this.state.hasError) {
+      const err = this.state.error ?? new Error('Unknown error');
+      if (this.props.fallback) {
+        return this.props.fallback(err, this.handleRetry);
+      }
       return (
         <div
           style={{
@@ -91,3 +98,4 @@ export default class ErrorBoundary extends Component<Props, State> {
     return this.props.children;
   }
 }
+

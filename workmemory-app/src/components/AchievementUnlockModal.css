@@ -1,0 +1,147 @@
+/**
+ * AchievementUnlockModal 样式 - audit-v4-hardening Task 17.1
+ *
+ * 定义：
+ *   1. rarity 颜色变量（common=蓝 / rare=紫 / epic=橙 / legendary=金）
+ *   2. overlay / 弹窗 spring 进入动画
+ *   3. 30 个粒子的爆发 keyframes（从中心向外扩散，CSS 自定义属性 --tx/--ty 控制方向）
+ *   4. 图标 spring 缩放、标题/描述/按钮淡入的时序
+ *   5. prefers-reduced-motion 覆盖：粒子容器不渲染、动画降级为瞬时
+ */
+
+/* ===== rarity 色系（与 04_UI_SPEC.md 设计 Token 协调） ===== */
+.aum-rarity-common {
+  --aum-color: #2563EB;       /* 蓝 */
+  --aum-color-soft: rgba(37, 99, 235, 0.18);
+  --aum-gradient: radial-gradient(circle at 50% 40%, #60A5FA 0%, #2563EB 60%, #1E40AF 100%);
+}
+.aum-rarity-rare {
+  --aum-color: #8B5CF6;       /* 紫 */
+  --aum-color-soft: rgba(139, 92, 246, 0.18);
+  --aum-gradient: radial-gradient(circle at 50% 40%, #C4B5FD 0%, #8B5CF6 60%, #6D28D9 100%);
+}
+.aum-rarity-epic {
+  --aum-color: #F59E0B;       /* 橙 */
+  --aum-color-soft: rgba(245, 158, 11, 0.18);
+  --aum-gradient: radial-gradient(circle at 50% 40%, #FCD34D 0%, #F59E0B 60%, #B45309 100%);
+}
+.aum-rarity-legendary {
+  --aum-color: #EAB308;       /* 金 */
+  --aum-color-soft: rgba(234, 179, 8, 0.22);
+  --aum-gradient: radial-gradient(circle at 50% 40%, #FEF08A 0%, #EAB308 55%, #A16207 100%);
+}
+
+/* ===== Overlay 淡入（0ms-200ms） ===== */
+.aum-overlay {
+  animation: aum-overlay-fade 200ms var(--ease-out-expo, ease-out) both;
+}
+@keyframes aum-overlay-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ===== 弹窗 spring 进入（200ms-600ms，scale 0.5→1.0 + slight overshoot） ===== */
+.aum-content {
+  animation: aum-content-spring 400ms var(--ease-spring, cubic-bezier(0.34, 1.56, 0.64, 1)) both;
+  animation-delay: 200ms;
+}
+@keyframes aum-content-spring {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.5); }
+  60% { opacity: 1; transform: translate(-50%, -50%) scale(1.06); }
+  100% { opacity: 1; transform: translate(-50%, -50%) scale(1.0); }
+}
+
+/* ===== 粒子区（顶部 80px） =====
+ * 30 个粒子，每个通过 inline style 设置 --tx / --ty（向外扩散的终点位移），
+ * animation-delay 400ms 起步，持续 1500ms。
+ */
+.aum-particles {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 80px;
+  overflow: hidden;
+  pointer-events: none;
+}
+.aum-particle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  margin: -3px 0 0 -3px;
+  border-radius: 50%;
+  background: var(--aum-color, #2563EB);
+  opacity: 0;
+  /* --tx / --ty 由 inline style 提供，控制粒子向外扩散方向 */
+  animation: aum-particle-burst 1500ms var(--ease-out-expo, ease-out) both;
+  animation-delay: 400ms;
+}
+@keyframes aum-particle-burst {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0) scale(0.4);
+  }
+  15% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--tx, 0), var(--ty, 0)) scale(1);
+  }
+}
+
+/* ===== 图标 spring 缩放（600ms-900ms） ===== */
+.aum-icon {
+  animation: aum-icon-spring 300ms var(--ease-spring, cubic-bezier(0.34, 1.56, 0.64, 1)) both;
+  animation-delay: 600ms;
+}
+@keyframes aum-icon-spring {
+  0% { opacity: 0; transform: scale(0.2) rotate(-20deg); }
+  60% { opacity: 1; transform: scale(1.15) rotate(4deg); }
+  100% { opacity: 1; transform: scale(1.0) rotate(0); }
+}
+
+/* ===== 标题 / 描述淡入（800ms-1100ms） ===== */
+.aum-title {
+  animation: aum-fade-up 300ms var(--ease-out-expo, ease-out) both;
+  animation-delay: 800ms;
+  /* 发光效果按 rarity 颜色 */
+  text-shadow: 0 0 12px var(--aum-color-soft, rgba(37, 99, 235, 0.5)),
+               0 0 24px var(--aum-color-soft, rgba(37, 99, 235, 0.3));
+}
+.aum-desc {
+  animation: aum-fade-up 300ms var(--ease-out-expo, ease-out) both;
+  animation-delay: 800ms;
+}
+@keyframes aum-fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ===== 按钮 / 链接淡入（1100ms-1300ms） ===== */
+.aum-footer {
+  animation: aum-fade-up 200ms var(--ease-out-expo, ease-out) both;
+  animation-delay: 1100ms;
+}
+
+/* ===== prefers-reduced-motion 覆盖 =====
+ * 跳过粒子动画（容器不渲染由组件 data-aum-reduced-motion 控制），
+ * 其余动画降级为瞬时显示，保留可访问性。
+ */
+@media (prefers-reduced-motion: reduce) {
+  .aum-overlay,
+  .aum-content,
+  .aum-icon,
+  .aum-title,
+  .aum-desc,
+  .aum-footer {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: translate(-50%, -50%) scale(1) !important;
+  }
+  .aum-particles {
+    display: none !important;
+  }
+}

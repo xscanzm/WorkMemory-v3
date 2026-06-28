@@ -22,6 +22,7 @@ import {
   Share2,
   FileText,
   Settings,
+  Tags,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -48,6 +49,8 @@ const MEMORY_NAV: NavItem[] = [
   { to: '/wiki', icon: BookOpen, label: 'Wiki' },
   { to: '/graph', icon: Share2, label: '图谱' },
   { to: '/reports', icon: FileText, label: '报告' },
+  // Task 15：标签管理（与 Wiki 相关，放在记忆子导航下方）
+  { to: '/tags', icon: Tags, label: '标签' },
 ];
 
 // 设置（底部独立项，原记忆组中的“设置”已上移至此主导航位）

@@ -12,8 +12,8 @@
 //! 4. 构造 WorkReport 写入 reports 表，广播 `report-ready`，返回 WorkReport。
 //!
 //! ## 并发安全
-//! DB 连接由 `std::sync::Mutex` 保护，其 Guard 非 Send，禁止跨 `.await` 持有。
-//! 因此读（episodes + settings）与写（insert_report）分两段加锁，AI 请求在两段之间执行。
+//! DB 连接由 r2d2 连接池管理，`PooledConnection` 非 Send，禁止跨 `.await` 持有。
+//! 因此读（episodes + settings）与写（insert_report）分两段获取连接，AI 请求在两段之间执行。
 
 use tauri::{Emitter, Manager};
 
@@ -67,10 +67,10 @@ pub async fn generate_report(
     date: &str,
     template_type: &str,
 ) -> Result<models::WorkReport, String> {
-    // ---- 第一段加锁：读取 episodes + settings + api_key（不跨 await）----
+    // ---- 第一段取连接：读取 episodes + settings + api_key（不跨 await）----
     let (episodes, settings, api_key) = {
-        let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
-        let conn = state.lock().map_err(|e| e.to_string())?;
+        let pool = app.state::<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>>();
+        let conn = pool.get().map_err(|e| e.to_string())?;
         let episodes =
             repository::get_episodes_by_date(&conn, date).map_err(|e| e.to_string())?;
         let settings = repository::get_settings(&conn).map_err(|e| e.to_string())?;
@@ -123,10 +123,10 @@ pub async fn generate_report(
         updated_at: now,
     };
 
-    // ---- 第二段加锁：写入 reports 表（不跨 await）----
+    // ---- 第二段取连接：写入 reports 表（不跨 await）----
     {
-        let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
-        let conn = state.lock().map_err(|e| e.to_string())?;
+        let pool = app.state::<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>>();
+        let conn = pool.get().map_err(|e| e.to_string())?;
         repository::insert_report(&conn, &report).map_err(|e| e.to_string())?;
     }
 

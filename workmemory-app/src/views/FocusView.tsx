@@ -8,8 +8,8 @@
  * - 任务关联：可选下拉选择 useTaskStore 中的任务（绑定 taskId）
  * - 今日会话列表：挂载与每次完成后刷新 get_today_focus_sessions
  *
- * 状态机：useFocusStore.startTimer/tick/pauseTimer/resumeTimer/stopTimer/interrupt/reset
- * tick 由本组件的 setInterval 在 status === 'running' 时驱动。
+ * 状态机：useFocusStore.startTimer/pauseTimer/resumeTimer/stopTimer/interrupt/reset
+ * tick 由 focusStore 内部 ticker（setInterval）驱动，组件卸载不影响计时推进。
  * 后端会话 id 在开始时 invoke('start_focus_session') 拿到后存入 ref，
  * 完成/中断时带上 actualDuration 调用对应命令。
  */
@@ -294,7 +294,6 @@ export default function FocusView(): JSX.Element {
   const durationSeconds = useFocusStore((s) => s.durationSeconds);
   const storeMode = useFocusStore((s) => s.mode);
   const startTimer = useFocusStore((s) => s.startTimer);
-  const tick = useFocusStore((s) => s.tick);
   const pauseTimer = useFocusStore((s) => s.pauseTimer);
   const resumeTimer = useFocusStore((s) => s.resumeTimer);
   const stopTimer = useFocusStore((s) => s.stopTimer);
@@ -342,18 +341,10 @@ export default function FocusView(): JSX.Element {
     }
   }
 
-  /** setInterval 驱动 tick：仅在 running 时推进 */
-  useEffect(() => {
-    if (status !== 'running') return;
-    const id = window.setInterval(() => {
-      tick();
-    }, 1000);
-    return () => window.clearInterval(id);
-  }, [status, tick]);
-
   /**
    * 监听 status → 'completed'：番茄钟到点自动完成 或 用户点完成。
    * 用 recordedRef 防止对同一 sessionId 重复调用后端 complete。
+   * （tick 由 focusStore 内部 ticker 驱动，无需本组件维护 setInterval。）
    */
   useEffect(() => {
     if (status !== 'completed') return;

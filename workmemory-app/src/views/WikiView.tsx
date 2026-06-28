@@ -24,7 +24,9 @@ import {
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '@/src-tauri/api';
+import { useDebouncedValue } from '@/utils/debounce';
 import type { CleanEpisode, WikiPage } from '@/types';
+import { useAsync } from '@/hooks/useAsync';
 import WikiMarkdownEditor from '@/components/WikiMarkdownEditor';
 
 const WV_CSS = `
@@ -137,10 +139,11 @@ export default function WikiView(): JSX.Element {
   const [currentPageId, setCurrentPageId] = useState<string | null>(null);
   const [reviewQueue, setReviewQueue] = useState<CleanEpisode[]>([]);
   const [reviewOpen, setReviewOpen] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
   const [search, setSearch] = useState('');
+  // 300ms 防抖：减少快速输入时的重复过滤计算（审计意见 2.2）
+  const debouncedSearch = useDebouncedValue(search, 300);
   // episodeId -> CleanEpisode，用于 References 来源标题解析
   const [episodeMap, setEpisodeMap] = useState<Record<string, CleanEpisode>>({});
 
@@ -153,10 +156,10 @@ export default function WikiView(): JSX.Element {
     [allWikiPages, currentPageId],
   );
   const filteredPages = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    const q = debouncedSearch.trim().toLowerCase();
     if (!q) return allWikiPages;
     return allWikiPages.filter((p) => p.title.toLowerCase().includes(q));
-  }, [allWikiPages, search]);
+  }, [allWikiPages, debouncedSearch]);
   const backlinks = useMemo(() => {
     if (!currentPage || currentPage.title.trim() === '') return [];
     const needle = `[[${currentPage.title}]]`;
@@ -169,37 +172,39 @@ export default function WikiView(): JSX.Element {
     ? episodeMap[currentPage.sourceEpisodeId]
     : undefined;
 
-  // 初始加载：Wiki 页面 + Review Queue
+  // 初始加载：Wiki 页面 + Review Queue（统一通过 useAsync 管理 loading/error，审计意见 2.5）
+  const { data: initialData, loading, error } = useAsync(
+    async () => {
+      const [pages, queue] = await Promise.all([
+        api.getWikiPages(),
+        api.getReviewQueue(),
+      ]);
+      return { pages, queue };
+    },
+    { deps: [] },
+  );
+
+  // 将 useAsync 数据同步到本地可变状态（用户操作会修改 allWikiPages/reviewQueue/episodeMap）
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setLoading(true);
-      try {
-        const [pages, queue] = await Promise.all([
-          api.getWikiPages(),
-          api.getReviewQueue(),
-        ]);
-        if (cancelled) return;
-        setAllWikiPages(pages);
-        setReviewQueue(queue);
-        const emap: Record<string, CleanEpisode> = {};
-        queue.forEach((e) => {
-          emap[e.id] = e;
-        });
-        setEpisodeMap(emap);
-        if (pages.length && !currentPageId) setCurrentPageId(pages[0].id);
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error('[WikiView] 加载失败', err);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (!initialData) return;
+    const { pages, queue } = initialData;
+    setAllWikiPages(pages);
+    setReviewQueue(queue);
+    const emap: Record<string, CleanEpisode> = {};
+    queue.forEach((e) => {
+      emap[e.id] = e;
+    });
+    setEpisodeMap(emap);
+    setCurrentPageId((prev) => prev ?? (pages[0]?.id ?? null));
+  }, [initialData]);
+
+  // 保留原有失败日志（best-effort）
+  useEffect(() => {
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.error('[WikiView] 加载失败', error);
+    }
+  }, [error]);
 
   const updatePage = (patch: Partial<WikiPage>) => {
     if (!currentPageId) return;

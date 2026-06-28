@@ -13,6 +13,7 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import * as Popover from '@radix-ui/react-popover';
+import { useDirtyGuard } from '@/hooks/useDirtyGuard';
 
 export interface WikiMarkdownEditorProps {
   value: string;
@@ -291,16 +292,37 @@ export default function WikiMarkdownEditor(
   const pendingCaretRef = useRef<number | null>(null);
   // 标记 value 变更是否来自用户在 textarea 内的输入，用于区分外部页面切换
   const internalChangeRef = useRef(false);
+  // 脏状态基线：外部 value 变更（切换页面）时重置；用户输入时与之比较判定 dirty
+  const baselineRef = useRef(value);
   const [linkState, setLinkState] = useState<LinkState | null>(null);
   const [activeIdx, setActiveIdx] = useState(0);
+  const [isDirty, setIsDirty] = useState(false);
 
-  // 外部 value 变更（如切换页面）时关闭自动补全
+  const { registerDirty, unregisterDirty } = useDirtyGuard();
+  const DIRTY_KEY = 'wiki-editor';
+
+  // 外部 value 变更（如切换页面）时关闭自动补全，并重置脏状态基线；
+  // 内部用户输入时与基线比较判定 dirty（审计意见 2.4）
   useEffect(() => {
     if (!internalChangeRef.current) {
       setLinkState(null);
+      baselineRef.current = value;
+      setIsDirty(false);
+    } else {
+      setIsDirty(value !== baselineRef.current);
     }
     internalChangeRef.current = false;
   }, [value]);
+
+  // 脏状态注册/注销：路由守卫据此拦截未保存内容切换路由
+  useEffect(() => {
+    if (isDirty) {
+      registerDirty(DIRTY_KEY, 'Wiki 编辑器有未保存的内容');
+    } else {
+      unregisterDirty(DIRTY_KEY);
+    }
+    return () => unregisterDirty(DIRTY_KEY);
+  }, [isDirty, registerDirty, unregisterDirty]);
 
   // 程序化插入后恢复光标
   useEffect(() => {

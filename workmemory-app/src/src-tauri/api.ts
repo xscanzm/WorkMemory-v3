@@ -15,6 +15,7 @@ import type {
   MascotInfo,
   RecorderState,
   SearchResult,
+  TagInfo,
   WikiPage,
   WorkReport,
 } from '@/types';
@@ -315,6 +316,28 @@ export async function sendSystemNotification(
   }
 }
 
+// ===== Task 15: 标签管理 =====
+
+/** 列出全部标签：聚合 wiki_pages.tags 的 count 与 last_used_at，附带颜色 */
+export async function listTags(): Promise<TagInfo[]> {
+  return invoke<TagInfo[]>('list_tags');
+}
+
+/** 重命名标签：在事务内替换所有 wiki_pages.tags 中的 oldName 为 newName */
+export async function renameTag(oldName: string, newName: string): Promise<number> {
+  return invoke<number>('rename_tag', { oldName, newName });
+}
+
+/** 合并标签：将 sourceTags 合并到 targetTag，事务内原子化 */
+export async function mergeTags(sourceTags: string[], targetTag: string): Promise<number> {
+  return invoke<number>('merge_tags', { sourceTags, targetTag });
+}
+
+/** 设置/清除标签颜色：color 为空字符串时清除颜色 */
+export async function setTagColor(tag: string, color: string): Promise<void> {
+  await invoke<void>('set_tag_color', { tag, color });
+}
+
 /**
  * 统一对外暴露的 api 对象。
  */
@@ -354,4 +377,9 @@ export const api = {
   getAllSoundscapePacks,
   toggleSoundscapePack,
   sendSystemNotification,
+  // Task 15
+  listTags,
+  renameTag,
+  mergeTags,
+  setTagColor,
 };

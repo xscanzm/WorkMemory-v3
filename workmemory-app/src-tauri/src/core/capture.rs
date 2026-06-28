@@ -185,16 +185,16 @@ pub fn get_recorder_state(_app: &tauri::AppHandle) -> String {
 }
 
 // ============================================================
-// DB 访问辅助（通过 app.state::<Mutex<Connection>>() 获取并快速释放锁）
+// DB 访问辅助（通过连接池 app.state::<Pool<...>>().get()? 获取并快速释放）
 // ============================================================
 
 fn with_db<F, R>(app: &tauri::AppHandle, f: F) -> Option<R>
 where
     F: FnOnce(&rusqlite::Connection) -> R,
 {
-    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
-    let guard = state.lock().ok()?;
-    Some(f(&guard))
+    let pool = app.state::<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>>();
+    let conn = pool.get().ok()?;
+    Some(f(&conn))
 }
 
 fn now_local() -> chrono::DateTime<chrono::Local> {
@@ -429,128 +429,135 @@ pub async fn start_polling(app: tauri::AppHandle) {
     loop {
         tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
 
-        // 1. 获取前台窗口
-        let fg = match get_foreground_window() {
-            Some(f) => f,
-            None => continue,
-        };
+        // 包裹单次迭代：系统调用 panic 不应杀死轮询循环
+        let iter_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // 1. 获取前台窗口
+            let fg = match get_foreground_window() {
+                Some(f) => f,
+                None => return,
+            };
 
-        // 2. Idle 检测（180s 无输入）
-        let current_tick = get_current_tick_ms();
-        let last_input = get_last_input_time();
-        let idle_secs = current_tick.saturating_sub(last_input) / 1000;
-        let current_state = get_recorder_state(&app);
+            // 2. Idle 检测（180s 无输入）
+            let current_tick = get_current_tick_ms();
+            let last_input = get_last_input_time();
+            let idle_secs = current_tick.saturating_sub(last_input) / 1000;
+            let current_state = get_recorder_state(&app);
 
-        if idle_secs >= IDLE_THRESHOLD_SECS {
-            if current_state != "Idle" {
-                set_recorder_state(&app, "Idle".to_string());
-                log::info!("进入 Idle（{}s 无输入），停止截图", idle_secs);
-            }
-            // Idle 期间停止截图，但仍轮询以检测唤醒
-            continue;
-        } else if current_state == "Idle" {
-            set_recorder_state(&app, "Recording".to_string());
-            log::info!("从 Idle 唤醒，恢复记录");
-        }
-
-        // 暂停状态不截图
-        if get_recorder_state(&app) == "Paused" {
-            continue;
-        }
-
-        // 3. 隐私守卫
-        let is_private = with_db(&app, |conn| {
-            matches_privacy_rules(conn, &fg.process_name, &fg.window_title, fg.browser_url.as_deref())
-        })
-        .unwrap_or(false);
-
-        if is_private {
-            if get_recorder_state(&app) != "PrivacyMode" {
-                set_recorder_state(&app, "PrivacyMode".to_string());
-            }
-            // 隐私命中：只存 is_private=1, ocr_status='skipped'，不存像素与 OCR 文本
-            insert_private_segment(&app, &fg);
-            // 仅首次闪烁广播 privacy-triggered
-            if last_privacy_process.as_deref() != Some(fg.process_name.as_str()) {
-                let _ = app.emit(
-                    "privacy-triggered",
-                    serde_json::json!({
-                        "process_name": fg.process_name,
-                        "window_title": fg.window_title,
-                    }),
-                );
-                last_privacy_process = Some(fg.process_name.clone());
-            }
-            continue;
-        } else if get_recorder_state(&app) == "PrivacyMode" {
-            // 离开隐私窗口，恢复记录
-            set_recorder_state(&app, "Recording".to_string());
-            last_privacy_process = None;
-        }
-
-        // 4. 标题/进程变化检测 + 3s 稳定
-        let title_changed = fg.window_title != last_window_title;
-        let process_changed = fg.process_name != last_process_name;
-        if title_changed || process_changed {
-            last_window_title = fg.window_title.clone();
-            last_process_name = fg.process_name.clone();
-            last_change_time = std::time::Instant::now();
-            // 窗口切换重置 pHash 基准，强制下一次 Create
-            last_image_hash.clear();
-            continue; // 等待稳定
-        }
-        if last_change_time.elapsed() < std::time::Duration::from_secs(STABLE_THRESHOLD_SECS) {
-            continue; // 未稳定
-        }
-
-        // 5. 截图 + pHash
-        let img = match capture_window_screenshot(fg.hwnd) {
-            Some(i) => i,
-            None => continue, // 截图失败 → Skip
-        };
-        let cur_hash = compute_phash(&img.rgba, img.width, img.height);
-
-        // 6. CaptureAction 分发
-        let action = if last_image_hash.is_empty() || last_segment_id.is_none() {
-            CaptureAction::Create
-        } else if !cur_hash.is_empty()
-            && phash_similarity(&last_image_hash, &cur_hash) >= PHASH_MERGE_SIMILARITY
-        {
-            CaptureAction::Merge
-        } else {
-            CaptureAction::Create
-        };
-
-        match action {
-            CaptureAction::Skip => continue,
-            CaptureAction::Merge => {
-                if let Some(sid) = last_segment_id.as_deref() {
-                    merge_segment_duration(&app, sid);
+            if idle_secs >= IDLE_THRESHOLD_SECS {
+                if current_state != "Idle" {
+                    set_recorder_state(&app, "Idle".to_string());
+                    log::info!("进入 Idle（{}s 无输入），停止截图", idle_secs);
                 }
-                // 保持 last_image_hash 基准不变，仅延长 duration
+                // Idle 期间停止截图，但仍轮询以检测唤醒
+                return;
+            } else if current_state == "Idle" {
+                set_recorder_state(&app, "Recording".to_string());
+                log::info!("从 Idle 唤醒，恢复记录");
             }
-            CaptureAction::Create => {
-                // TODO: 磁盘保存分支——仅当 settings.saveScreenshots=true 时写盘
-                // （本任务不实现，截图仅内存流转）
-                let sid = insert_segment(&app, &fg, &cur_hash, "auto");
-                if sid.is_empty() {
-                    continue;
+
+            // 暂停状态不截图
+            if get_recorder_state(&app) == "Paused" {
+                return;
+            }
+
+            // 3. 隐私守卫
+            let is_private = with_db(&app, |conn| {
+                matches_privacy_rules(conn, &fg.process_name, &fg.window_title, fg.browser_url.as_deref())
+            })
+            .unwrap_or(false);
+
+            if is_private {
+                if get_recorder_state(&app) != "PrivacyMode" {
+                    set_recorder_state(&app, "PrivacyMode".to_string());
                 }
-                last_image_hash = cur_hash.clone();
-                last_segment_id = Some(sid.clone());
-                let _ = app.emit(
-                    "segment-captured",
-                    serde_json::json!({
-                        "id": sid,
-                        "app_name": fg.app_name,
-                        "window_title": fg.window_title,
-                        "image_hash": cur_hash,
-                        "capture_source": "auto",
-                    }),
-                );
-                // 异步入队 OCR（ocr 模块由 Task 5 提供）
-                enqueue_ocr(&app, &sid, img);
+                // 隐私命中：只存 is_private=1, ocr_status='skipped'，不存像素与 OCR 文本
+                insert_private_segment(&app, &fg);
+                // 仅首次闪烁广播 privacy-triggered
+                if last_privacy_process.as_deref() != Some(fg.process_name.as_str()) {
+                    let _ = app.emit(
+                        "privacy-triggered",
+                        serde_json::json!({
+                            "process_name": fg.process_name,
+                            "window_title": fg.window_title,
+                        }),
+                    );
+                    last_privacy_process = Some(fg.process_name.clone());
+                }
+                return;
+            } else if get_recorder_state(&app) == "PrivacyMode" {
+                // 离开隐私窗口，恢复记录
+                set_recorder_state(&app, "Recording".to_string());
+                last_privacy_process = None;
             }
+
+            // 4. 标题/进程变化检测 + 3s 稳定
+            let title_changed = fg.window_title != last_window_title;
+            let process_changed = fg.process_name != last_process_name;
+            if title_changed || process_changed {
+                last_window_title = fg.window_title.clone();
+                last_process_name = fg.process_name.clone();
+                last_change_time = std::time::Instant::now();
+                // 窗口切换重置 pHash 基准，强制下一次 Create
+                last_image_hash.clear();
+                return; // 等待稳定
+            }
+            if last_change_time.elapsed() < std::time::Duration::from_secs(STABLE_THRESHOLD_SECS) {
+                return; // 未稳定
+            }
+
+            // 5. 截图 + pHash
+            let img = match capture_window_screenshot(fg.hwnd) {
+                Some(i) => i,
+                None => return, // 截图失败 → Skip
+            };
+            let cur_hash = compute_phash(&img.rgba, img.width, img.height);
+
+            // 6. CaptureAction 分发
+            let action = if last_image_hash.is_empty() || last_segment_id.is_none() {
+                CaptureAction::Create
+            } else if !cur_hash.is_empty()
+                && phash_similarity(&last_image_hash, &cur_hash) >= PHASH_MERGE_SIMILARITY
+            {
+                CaptureAction::Merge
+            } else {
+                CaptureAction::Create
+            };
+
+            match action {
+                CaptureAction::Skip => return,
+                CaptureAction::Merge => {
+                    if let Some(sid) = last_segment_id.as_deref() {
+                        merge_segment_duration(&app, sid);
+                    }
+                    // 保持 last_image_hash 基准不变，仅延长 duration
+                }
+                CaptureAction::Create => {
+                    // TODO: 磁盘保存分支——仅当 settings.saveScreenshots=true 时写盘
+                    // （本任务不实现，截图仅内存流转）
+                    let sid = insert_segment(&app, &fg, &cur_hash, "auto");
+                    if sid.is_empty() {
+                        return;
+                    }
+                    last_image_hash = cur_hash.clone();
+                    last_segment_id = Some(sid.clone());
+                    let _ = app.emit(
+                        "segment-captured",
+                        serde_json::json!({
+                            "id": sid,
+                            "app_name": fg.app_name,
+                            "window_title": fg.window_title,
+                            "image_hash": cur_hash,
+                            "capture_source": "auto",
+                        }),
+                    );
+                    // 异步入队 OCR（ocr 模块由 Task 5 提供）
+                    enqueue_ocr(&app, &sid, img);
+                }
+            }
+        }));
+
+        if let Err(payload) = iter_result {
+            log::error!("capture 轮询迭代 panic: {:?}", payload);
         }
     }
 }
@@ -605,20 +612,38 @@ pub async fn trigger_manual_capture(app: tauri::AppHandle) -> String {
 #[cfg(target_os = "windows")]
 fn get_current_tick_ms() -> u64 {
     // GetTickCount64 位于 Win32_System_SystemInformation（需在 Cargo.toml 启用该 feature）
-    unsafe { windows::Win32::System::SystemInformation::GetTickCount64() }
+    // 包裹 catch_unwind：系统调用 panic 不应杀死捕获循环
+    let result = std::panic::catch_unwind(|| unsafe {
+        windows::Win32::System::SystemInformation::GetTickCount64()
+    });
+    match result {
+        Ok(v) => v,
+        Err(payload) => {
+            log::error!("capture GetTickCount64 系统调用 panic: {:?}", payload);
+            0
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
 fn get_last_input_time() -> u64 {
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
 
-    unsafe {
+    // 包裹 catch_unwind：GetLastInputInfo panic 不应杀死捕获循环
+    let result = std::panic::catch_unwind(|| unsafe {
         let mut lii: LASTINPUTINFO = std::mem::zeroed();
         lii.cbSize = std::mem::size_of::<LASTINPUTINFO>() as u32;
         if GetLastInputInfo(&mut lii).as_bool() {
             lii.dwTime as u64
         } else {
             get_current_tick_ms()
+        }
+    });
+    match result {
+        Ok(v) => v,
+        Err(payload) => {
+            log::error!("capture GetLastInputInfo 系统调用 panic: {:?}", payload);
+            0
         }
     }
 }
@@ -635,7 +660,8 @@ fn get_foreground_window() -> Option<ForegroundInfo> {
     use windows::Win32::Foundation::{BOOL, LPARAM};
     use windows::core::PWSTR;
 
-    unsafe {
+    // 包裹 catch_unwind：Win32 系统调用 panic 不应杀死捕获循环
+    let result = std::panic::catch_unwind(|| unsafe {
         let hwnd = GetForegroundWindow();
         if hwnd.0.is_null() {
             return None;
@@ -755,6 +781,13 @@ fn get_foreground_window() -> Option<ForegroundInfo> {
             app_name,
             browser_url,
         })
+    });
+    match result {
+        Ok(v) => v,
+        Err(payload) => {
+            log::error!("capture get_foreground_window 系统调用 panic: {:?}", payload);
+            None
+        }
     }
 }
 
@@ -768,7 +801,8 @@ fn capture_window_screenshot(hwnd_usize: usize) -> Option<CapturedImage> {
     };
     use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
-    unsafe {
+    // 包裹 catch_unwind：GDI 截图系统调用 panic 不应杀死捕获循环
+    let result = std::panic::catch_unwind(|| unsafe {
         let hwnd = HWND(hwnd_usize as *mut std::ffi::c_void);
 
         // 窗口矩形
@@ -843,6 +877,13 @@ fn capture_window_screenshot(hwnd_usize: usize) -> Option<CapturedImage> {
             width: width as u32,
             height: height as u32,
         })
+    });
+    match result {
+        Ok(v) => v,
+        Err(payload) => {
+            log::error!("capture capture_window_screenshot 系统调用 panic: {:?}", payload);
+            None
+        }
     }
 }
 

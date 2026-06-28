@@ -2,7 +2,7 @@
  * 专注会话状态管理 (Zustand) - WorkMemory-v3 Task 6
  *
  * 纯前端状态机，支持 pomodoro / free 两种模式（Task 12/13 将接入后端持久化）。
- * tick() 由 FocusView 组件的 setInterval 驱动（Task 13）。
+ * tick() 由 store 内部 ticker（setInterval）驱动，组件卸载不影响计时推进。
  *
  * 状态流转：
  *   idle → running → (paused ⇄ running) → completed / interrupted → idle(reset)
@@ -29,6 +29,23 @@ interface FocusState {
     reset: () => void;
 }
 
+// 模块级 ticker 句柄：interval id 与 UI 无关，不放入 state（不可序列化）
+let tickerId: ReturnType<typeof setInterval> | null = null;
+
+function startTicker(): void {
+    if (tickerId !== null) return;
+    tickerId = setInterval(() => {
+        useFocusStore.getState().tick();
+    }, 1000);
+}
+
+function stopTicker(): void {
+    if (tickerId !== null) {
+        clearInterval(tickerId);
+        tickerId = null;
+    }
+}
+
 export const useFocusStore = create<FocusState>((set, get) => ({
     mode: null,
     status: 'idle',
@@ -46,15 +63,17 @@ export const useFocusStore = create<FocusState>((set, get) => ({
             taskId: taskId ?? null,
             interruptionReason: null,
         });
+        startTicker();
     },
 
     tick: () => {
         const { status, elapsedSeconds, durationSeconds } = get();
         if (status !== 'running') return;
         const next = elapsedSeconds + 1;
-        // 达到计划时长自动标记完成
+        // 达到计划时长自动标记完成并停止 ticker
         if (durationSeconds > 0 && next >= durationSeconds) {
             set({ elapsedSeconds: durationSeconds, status: 'completed' });
+            stopTicker();
         } else {
             set({ elapsedSeconds: next });
         }
@@ -63,21 +82,25 @@ export const useFocusStore = create<FocusState>((set, get) => ({
     pauseTimer: () => {
         if (get().status === 'running') {
             set({ status: 'paused' });
+            stopTicker();
         }
     },
 
     resumeTimer: () => {
         if (get().status === 'paused') {
             set({ status: 'running' });
+            startTicker();
         }
     },
 
     stopTimer: () => {
         set({ status: 'completed' });
+        stopTicker();
     },
 
     interrupt: (reason) => {
         set({ status: 'interrupted', interruptionReason: reason });
+        stopTicker();
     },
 
     reset: () => {
@@ -89,5 +112,6 @@ export const useFocusStore = create<FocusState>((set, get) => ({
             taskId: null,
             interruptionReason: null,
         });
+        stopTicker();
     },
 }));

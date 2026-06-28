@@ -17,13 +17,14 @@ use tauri::Manager;
 
 /// 启动后台调度器
 pub fn start_scheduler(app: tauri::AppHandle) {
-    // 1. 每小时宠物衰减
+    // 1. 每小时宠物衰减 + WAL checkpoint
     let app_hourly = app.clone();
     tauri::async_runtime::spawn(async move {
         // 启动后先等 1 小时再首次执行
         loop {
             tokio::time::sleep(Duration::from_secs(3600)).await;
             run_pet_decay(&app_hourly);
+            run_wal_checkpoint(&app_hourly);
         }
     });
 
@@ -41,21 +42,37 @@ pub fn start_scheduler(app: tauri::AppHandle) {
         }
     });
 
-    log::info!("后台调度器已启动（每小时宠物衰减 / 每日 23:00 摘要）");
+    log::info!("后台调度器已启动（每小时宠物衰减 + WAL checkpoint / 每日 23:00 摘要）");
 }
 
 /// 执行宠物衰减
 fn run_pet_decay(app: &tauri::AppHandle) {
-    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
-    // 注意：必须将 guard 绑定到变量，否则 Deref 临时引用在 if let 中生命周期不足
-    let conn = match state.lock() {
-        Ok(g) => g,
+    let pool = app.state::<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>>();
+    // 注意：必须将连接绑定到变量，否则 Deref 临时引用在 if let 中生命周期不足
+    let conn = match pool.get() {
+        Ok(c) => c,
         Err(_) => return,
     };
     // 衰减 1 小时（hunger -5%/hr, energy -3%/hr）
     match crate::core::pet_engine::decay(&conn, 1.0) {
         Ok(pet) => log::debug!("宠物衰减完成：hunger={}, energy={}", pet.hunger, pet.energy),
         Err(e) => log::warn!("宠物衰减失败: {}", e),
+    }
+}
+
+/// 执行 WAL checkpoint（每小时，TRUNCATE 模式将 WAL 文件截断至最小）
+///
+/// Task 5.1：避免长期运行下 WAL 文件无限膨胀。与 run_pet_decay 共用同一连接池
+/// （Task 1 连接池合并后通过 `pool.get()` 取连接，SQL 不变）。
+fn run_wal_checkpoint(app: &tauri::AppHandle) {
+    let pool = app.state::<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>>();
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    match conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
+        Ok(_) => log::debug!("WAL checkpoint 完成"),
+        Err(e) => log::warn!("WAL checkpoint 失败: {}", e),
     }
 }
 

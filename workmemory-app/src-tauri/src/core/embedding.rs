@@ -115,11 +115,11 @@ pub async fn embed_text(
 pub async fn embed_memory_cell(app: &tauri::AppHandle, cell: &models::MemoryCell) {
     // 加载 settings：未启用 embedding 则直接跳过
     let settings = {
-        let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
-        let conn = match state.lock() {
+        let pool = app.state::<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>>();
+        let conn = match pool.get() {
             Ok(c) => c,
             Err(e) => {
-                log::warn!("向量化跳过（DB Mutex 锁失败）cell={}: {}", cell.id, e);
+                log::warn!("向量化跳过（DB 连接池获取失败）cell={}: {}", cell.id, e);
                 return;
             }
         };
@@ -165,11 +165,11 @@ pub async fn embed_memory_cell(app: &tauri::AppHandle, cell: &models::MemoryCell
     };
 
     // 写入 DB
-    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
-    let conn = match state.lock() {
+    let pool = app.state::<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>>();
+    let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => {
-            log::warn!("向量化写库跳过（DB Mutex 锁失败）cell={}: {}", cell.id, e);
+            log::warn!("向量化写库跳过（DB 连接池获取失败）cell={}: {}", cell.id, e);
             return;
         }
     };
@@ -197,11 +197,11 @@ pub async fn embed_memory_cell(app: &tauri::AppHandle, cell: &models::MemoryCell
 pub async fn vector_search(app: &tauri::AppHandle, query: &str) -> Vec<models::SearchResult> {
     // 1. 读取 settings 并做前置检查
     let settings = {
-        let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
-        let conn = match state.lock() {
+        let pool = app.state::<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>>();
+        let conn = match pool.get() {
             Ok(c) => c,
             Err(e) => {
-                log::warn!("向量检索跳过（DB Mutex 锁失败）: {}", e);
+                log::warn!("向量检索跳过（DB 连接池获取失败）: {}", e);
                 return vec![];
             }
         };
@@ -232,11 +232,11 @@ pub async fn vector_search(app: &tauri::AppHandle, query: &str) -> Vec<models::S
 
     // 3. 加载全部 embeddings 到内存
     let embeddings = {
-        let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
-        let conn = match state.lock() {
+        let pool = app.state::<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>>();
+        let conn = match pool.get() {
             Ok(c) => c,
             Err(e) => {
-                log::warn!("向量检索跳过（DB Mutex 锁失败）: {}", e);
+                log::warn!("向量检索跳过（DB 连接池获取失败）: {}", e);
                 return vec![];
             }
         };
@@ -262,11 +262,11 @@ pub async fn vector_search(app: &tauri::AppHandle, query: &str) -> Vec<models::S
     let top_k = scored.into_iter().take(10);
 
     // 6. 反查 memory_cell → clean_episode，构造 SearchResult
-    let state = app.state::<std::sync::Mutex<rusqlite::Connection>>();
-    let conn = match state.lock() {
+    let pool = app.state::<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>>();
+    let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => {
-            log::warn!("向量检索跳过（DB Mutex 锁失败，反查阶段）: {}", e);
+            log::warn!("向量检索跳过（DB 连接池获取失败，反查阶段）: {}", e);
             return vec![];
         }
     };

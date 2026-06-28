@@ -20,3 +20,4 @@ pub mod analytics_engine;
 pub mod soundscape_engine;
 pub mod achievement_engine;
 pub mod data_port;
+pub mod validator;

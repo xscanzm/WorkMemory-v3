@@ -39,7 +39,8 @@ pub fn extract_browser_url(hwnd_usize: usize) -> Option<String> {
     // DFS 最大深度，防止极端情况下遍历整个 UIA 树消耗过多 CPU。
     const MAX_DEPTH: u32 = 5;
 
-    unsafe {
+    // 包裹 catch_unwind：UIA 系统调用 panic 不应杀死捕获循环
+    let result = std::panic::catch_unwind(|| unsafe {
         // 1. 创建 IUIAutomation 实例。
         //    CUIAutomation 是 IUIAutomation 的默认 coclass；其 new() 内部调用
         //    CoCreateInstance。若该 coclass 在当前 windows-rs 版本中未导出，
@@ -99,6 +100,13 @@ pub fn extract_browser_url(hwnd_usize: usize) -> Option<String> {
         }
 
         None
+    });
+    match result {
+        Ok(v) => v,
+        Err(payload) => {
+            log::error!("uia extract_browser_url 系统调用 panic: {:?}", payload);
+            None
+        }
     }
 }
 

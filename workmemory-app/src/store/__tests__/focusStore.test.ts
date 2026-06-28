@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { renderHook, act } from '@testing-library/react';
 import { useFocusStore } from '../focusStore';
 
 // 专注会话状态机测试 - WorkMemory-v3 Task 21
@@ -95,5 +96,31 @@ describe('focusStore 状态机', () => {
     expect(s.elapsedSeconds).toBe(0);
     expect(s.taskId).toBeNull();
     expect(s.interruptionReason).toBeNull();
+  });
+
+  it('计时器在组件卸载后继续推进 (ticker 由 store 管理)', () => {
+    // 使用 fake timer 控制 setInterval 推进
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useFocusStore());
+
+    act(() => {
+      result.current.startTimer('pomodoro', 1500);
+    });
+
+    expect(result.current.status).toBe('running');
+    expect(result.current.elapsedSeconds).toBe(0);
+
+    // 推进 5 秒
+    act(() => { vi.advanceTimersByTime(5000); });
+    expect(result.current.elapsedSeconds).toBe(5);
+
+    // 模拟组件卸载（真实场景中 FocusView 卸载但 store 持续）：
+    // store 的 ticker 仍应继续推进
+    act(() => { vi.advanceTimersByTime(3000); });
+    expect(result.current.elapsedSeconds).toBe(8);
+
+    // 清理
+    act(() => result.current.reset());
+    vi.useRealTimers();
   });
 });

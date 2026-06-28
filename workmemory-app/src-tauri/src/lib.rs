@@ -20,15 +20,36 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::default().build())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            // 初始化数据库（WAL + 外键 + 迁移）
+            // 初始化数据库（WAL + 外键 + 迁移）—— r2d2 连接池
             let app_data_dir = app.path().app_data_dir().expect("无法获取 app_data_dir");
             std::fs::create_dir_all(&app_data_dir).ok();
             let db_path = app_data_dir.join("workmemory.db");
             log::info!("数据库路径: {:?}", db_path);
 
-            let conn = db::connection::init(&db_path).expect("数据库初始化失败");
-            db::migrations::run(&conn).expect("数据库迁移失败");
-            app.manage(std::sync::Mutex::new(conn));
+            // 连接池：min_idle=2 / max_size=8，每个新连接应用 PRAGMA(WAL+外键+同步+忙等待)
+            let manager = r2d2_sqlite::SqliteConnectionManager::file(&db_path)
+                .with_init(|c| {
+                    c.execute_batch(
+                        "PRAGMA journal_mode = WAL;
+                         PRAGMA foreign_keys = ON;
+                         PRAGMA synchronous = NORMAL;",
+                    )?;
+                    c.busy_timeout(std::time::Duration::from_millis(5000))?;
+                    Ok(())
+                });
+            let pool = r2d2::Pool::builder()
+                .max_size(8)
+                .min_idle(Some(2))
+                .build(manager)
+                .expect("Failed to create SQLite connection pool");
+
+            // 在一个池连接上运行一次迁移（DDL 幂等，可安全重复执行）
+            {
+                let conn = pool.get().expect("无法从连接池获取连接以执行迁移");
+                db::migrations::run(&conn).expect("数据库迁移失败");
+            }
+
+            app.manage(pool);
 
             // 显示 Mascot 透明窗口
             if let Some(mascot) = app.get_webview_window("mascot") {
@@ -111,6 +132,14 @@ pub fn run() {
             ipc::commands::get_all_achievements,
             ipc::commands::unlock_achievement,
             ipc::commands::recalculate_achievements,
+            // Task 12: 快速捕获窗口
+            ipc::commands::show_quick_capture,
+            ipc::commands::hide_quick_capture,
+            // Task 15: 标签管理面板
+            ipc::commands::list_tags,
+            ipc::commands::rename_tag,
+            ipc::commands::merge_tags,
+            ipc::commands::set_tag_color,
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 启动失败");

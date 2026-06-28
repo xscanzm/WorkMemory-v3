@@ -6,13 +6,15 @@
  * - 7×6 月历网格（CSS Grid 7 列）：日期数字 / 工作强度渐变微条 / 一句话总结缩写 / 日报✔徽章
  * - 右侧本页内嵌 Context 面板：点击网格静默刷新为当天 Summary + 前 3 条 Episode 简版 + 导出日报
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, Check, FileText } from 'lucide-react';
 import { api } from '@/src-tauri/api';
 import { useAppStore } from '@/store/useAppStore';
+import { useAsync } from '@/hooks/useAsync';
 import type { CalendarDay, CleanEpisode } from '@/types';
+import MemoryFullscreenModal from '@/components/MemoryFullscreenModal';
 
 const WEEKDAY_LABELS = ['日', '一', '二', '三', '四', '五', '六'];
 
@@ -232,16 +234,57 @@ export default function CalendarView(): JSX.Element {
   const now = new Date();
   const [viewYear, setViewYear] = useState(now.getFullYear());
   const [viewMonth, setViewMonth] = useState(now.getMonth() + 1);
-  const [days, setDays] = useState<CalendarDay[]>([]);
-  const [loading, setLoading] = useState(true);
-
   const [selectedDate, setSelectedDate] = useState(todayStr());
-  const [episodes, setEpisodes] = useState<CleanEpisode[]>([]);
-  const [summary, setSummary] = useState('');
-  const [panelLoading, setPanelLoading] = useState(false);
+  const [selectedEpisode, setSelectedEpisode] = useState<CleanEpisode | null>(null);
 
   const navigate = useNavigate();
   const setActiveDate = useAppStore((s) => s.setActiveDate);
+
+  // 当月数据：统一通过 useAsync 获取（审计意见 2.5），viewYear/viewMonth 变化时重新拉取
+  const { data: monthData, loading, error: monthError } = useAsync(
+    () => api.getCalendarMonth(viewYear, viewMonth),
+    { deps: [viewYear, viewMonth] },
+  );
+  const days: CalendarDay[] = monthData ?? [];
+
+  // 选中日 Summary + Episodes：selectedDate 变化时重新拉取
+  const { data: dayCtx, loading: panelLoading, error: dayError } = useAsync(
+    async () => {
+      const [eps, sm] = await Promise.all([
+        api.getEpisodesByDate(selectedDate),
+        api.getTodaySummary(selectedDate),
+      ]);
+      return { episodes: eps ?? [], summary: sm ?? '' };
+    },
+    { deps: [selectedDate] },
+  );
+  const episodes: CleanEpisode[] = dayCtx?.episodes ?? [];
+  const summary: string = dayCtx?.summary ?? '';
+
+  // 数据刷新时按 id 同步 selectedEpisode（避免显示过期数据）
+  useEffect(() => {
+    if (!selectedEpisode) return;
+    const fresh = episodes.find((e) => e.id === selectedEpisode.id);
+    if (fresh && fresh !== selectedEpisode) {
+      setSelectedEpisode(fresh);
+    } else if (!fresh) {
+      setSelectedEpisode(null);
+    }
+  }, [episodes, selectedEpisode]);
+
+  // 保留原有失败日志（best-effort，失败时降级为空展示）
+  useEffect(() => {
+    if (monthError) {
+      // eslint-disable-next-line no-console
+      console.error('[getCalendarMonth] 拉取失败', monthError);
+    }
+  }, [monthError]);
+  useEffect(() => {
+    if (dayError) {
+      // eslint-disable-next-line no-console
+      console.error('[loadDayContext] 拉取失败', dayError);
+    }
+  }, [dayError]);
 
   const dayMap = useMemo(() => {
     const m = new Map<string, CalendarDay>();
@@ -257,49 +300,6 @@ export default function CalendarView(): JSX.Element {
     () => buildGrid(viewYear, viewMonth, dayMap),
     [viewYear, viewMonth, dayMap],
   );
-
-  // 拉取当月数据
-  const loadMonth = useCallback(async (y: number, m: number) => {
-    setLoading(true);
-    try {
-      const res = await api.getCalendarMonth(y, m);
-      setDays(res ?? []);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('[getCalendarMonth] 拉取失败', err);
-      setDays([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  // 拉取选中日的 Summary + Episodes
-  const loadDayContext = useCallback(async (date: string) => {
-    setPanelLoading(true);
-    try {
-      const [eps, sm] = await Promise.all([
-        api.getEpisodesByDate(date),
-        api.getTodaySummary(date),
-      ]);
-      setEpisodes(eps ?? []);
-      setSummary(sm ?? '');
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('[loadDayContext] 拉取失败', err);
-      setEpisodes([]);
-      setSummary('');
-    } finally {
-      setPanelLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadMonth(viewYear, viewMonth);
-  }, [viewYear, viewMonth, loadMonth]);
-
-  useEffect(() => {
-    void loadDayContext(selectedDate);
-  }, [selectedDate, loadDayContext]);
 
   const shiftMonth = (delta: number) => {
     let m = viewMonth + delta;
@@ -480,10 +480,14 @@ export default function CalendarView(): JSX.Element {
                 {episodes.slice(0, 3).map((ep) => (
                   <div
                     key={ep.id}
+                    onClick={() => setSelectedEpisode(ep)}
+                    title="点击查看详情"
                     style={{
                       padding: 'var(--space-sm) var(--space-md)',
                       borderRadius: 'var(--radius-sm)',
                       background: 'var(--color-surface-subtle)',
+                      cursor: 'pointer',
+                      transition: 'background var(--duration-fast) var(--ease-out-expo)',
                     }}
                   >
                     <div
@@ -554,6 +558,12 @@ export default function CalendarView(): JSX.Element {
           </div>
         </aside>
       </div>
+
+      <MemoryFullscreenModal
+        episode={selectedEpisode}
+        open={!!selectedEpisode}
+        onOpenChange={(o) => !o && setSelectedEpisode(null)}
+      />
     </div>
   );
 }

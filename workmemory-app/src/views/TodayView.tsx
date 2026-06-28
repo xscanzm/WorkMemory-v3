@@ -17,6 +17,7 @@ import { toast } from '@/store/toastStore';
 import { api, listen } from '@/src-tauri/api';
 import type { AppSetting, CleanEpisode } from '@/types';
 import MemoryCard from '@/components/MemoryCard';
+import MemoryFullscreenModal from '@/components/MemoryFullscreenModal';
 import TimelineRail from '@/components/TimelineRail';
 import MascotSprite from '@/components/mascot/MascotSprite';
 
@@ -51,6 +52,19 @@ export default function TodayView(): JSX.Element {
 
   const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
+  const [selectedEpisode, setSelectedEpisode] = useState<CleanEpisode | null>(null);
+
+  // 数据刷新时按 id 同步 selectedEpisode（避免显示过期数据）
+  useEffect(() => {
+    if (!selectedEpisode) return;
+    const fresh = episodesFromStore.find((e) => e.id === selectedEpisode.id);
+    if (fresh && fresh !== selectedEpisode) {
+      setSelectedEpisode(fresh);
+    } else if (!fresh) {
+      // 已被删除/不在列表中，关闭模态
+      setSelectedEpisode(null);
+    }
+  }, [episodesFromStore, selectedEpisode]);
 
   // 初始加载 episodes
   useEffect(() => {
@@ -171,6 +185,7 @@ export default function TodayView(): JSX.Element {
                     appName={ep.project}
                     isPrivate={ep.isPrivate}
                     isActive={ep.id === activeEpisodeId}
+                    onClick={() => setSelectedEpisode(ep)}
                     onToggleImportant={(id) => {
                       // P0：仅本地反馈，持久化由后端集成后接入
                       // eslint-disable-next-line no-console
@@ -213,6 +228,12 @@ export default function TodayView(): JSX.Element {
         </ScrollArea.Scrollbar>
         <ScrollArea.Corner />
       </ScrollArea.Root>
+
+      <MemoryFullscreenModal
+        episode={selectedEpisode}
+        open={!!selectedEpisode}
+        onOpenChange={(o) => !o && setSelectedEpisode(null)}
+      />
     </div>
   );
 }

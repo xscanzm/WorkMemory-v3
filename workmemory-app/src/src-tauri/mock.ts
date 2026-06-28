@@ -527,6 +527,17 @@ export const invokeMock = async (command: string, args?: any): Promise<any> => {
     case 'unlock_achievement':
       return MOCK_ACHIEVEMENTS.find((a) => a.code === args?.code) ?? MOCK_ACHIEVEMENTS[0];
 
+    // Task 15: 标签管理（mock 返回空数据，避免阻塞 UI 调试）
+    case 'list_tags':
+      return [];
+
+    case 'rename_tag':
+    case 'merge_tags':
+      return 0;
+
+    case 'set_tag_color':
+      return null;
+
     default:
       // 未知命令返回 null，避免阻塞 UI
       // eslint-disable-next-line no-console
